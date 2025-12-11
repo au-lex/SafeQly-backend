@@ -10,7 +10,7 @@ import (
 	"github.com/joho/godotenv"
 	
 	"SafeQly/internal/database"
-	"SafeQly/internal/handlers"  // ADD THIS IMPORT
+	"SafeQly/internal/handlers" 
 	"SafeQly/internal/routes"
 )
 
@@ -26,7 +26,7 @@ func main() {
 	log.Printf("   EMAIL_APP_PASSWORD: '%s'", os.Getenv("EMAIL_APP_PASSWORD"))
 	log.Printf("   DB_HOST: '%s'", os.Getenv("DB_HOST"))
 
-	// Initialize email service AFTER loading .env - ADD THIS LINE
+	// Initialize email service
 	handlers.InitEmailService()
 
 	// Connect to database
