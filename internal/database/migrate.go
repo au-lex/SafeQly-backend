@@ -15,6 +15,10 @@ func Migrate() error {
     err := DB.AutoMigrate(
         &models.User{},
         &models.PendingUser{},
+        &models.Escrow{},
+		&models.Dispute{},
+		&models.Transaction{},  
+		&models.BankAccount{},
     )
     
     if err != nil {

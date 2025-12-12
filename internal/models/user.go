@@ -1,8 +1,8 @@
 package models
 
 import (
-    "time"
-    "gorm.io/gorm"
+	"time"
+	"gorm.io/gorm"
 )
 
 type User struct {
@@ -12,8 +12,8 @@ type User struct {
 	Phone             string         `gorm:"not null" json:"phone"`
 	Password          string         `gorm:"not null" json:"-"`
 	UserTag           string         `gorm:"uniqueIndex;not null" json:"user_tag"`
-	Avatar            string         `gorm:"type:text" json:"avatar,omitempty"`    
-	Balance           float64        `gorm:"default:0" json:"balance"`            
+	Avatar            string         `gorm:"type:text" json:"avatar,omitempty"`
+	Balance           float64        `gorm:"default:0" json:"balance"`
 	IsEmailVerified   bool           `gorm:"default:false" json:"is_email_verified"`
 	OTP               string         `gorm:"index" json:"-"`
 	OTPExpiry         *time.Time     `json:"-"`
@@ -22,26 +22,23 @@ type User struct {
 	CreatedAt         time.Time      `json:"created_at"`
 	UpdatedAt         time.Time      `json:"updated_at"`
 	DeletedAt         gorm.DeletedAt `gorm:"index" json:"-"`
-	
 }
 
-// TableName specifies the table name
 func (User) TableName() string {
-    return "users"
+	return "users"
 }
 
-// PendingUser stores temporary signup data until OTP verification
 type PendingUser struct {
-    ID        uint       `gorm:"primarykey" json:"id"`
-    FullName  string     `gorm:"not null" json:"full_name"`
-    Email     string     `gorm:"uniqueIndex;not null" json:"email"`
-    Phone     string     `gorm:"not null" json:"phone"`
-    Password  string     `gorm:"not null" json:"-"`
-    OTP       string     `gorm:"not null" json:"-"`
-    OTPExpiry time.Time  `gorm:"not null" json:"-"`
-    CreatedAt time.Time  `json:"created_at"`
+	ID        uint      `gorm:"primarykey" json:"id"`
+	FullName  string    `gorm:"not null" json:"full_name"`
+	Email     string    `gorm:"uniqueIndex;not null" json:"email"`
+	Phone     string    `gorm:"not null" json:"phone"`
+	Password  string    `gorm:"not null" json:"-"`
+	OTP       string    `gorm:"not null" json:"-"`
+	OTPExpiry time.Time `gorm:"not null" json:"-"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 func (PendingUser) TableName() string {
-    return "pending_users"
+	return "pending_users"
 }
