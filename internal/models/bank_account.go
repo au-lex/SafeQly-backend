@@ -12,6 +12,7 @@ type BankAccount struct {
 	AccountNumber string         `gorm:"not null" json:"account_number"`
 	AccountName   string         `gorm:"not null" json:"account_name"`
 	BankCode      string         `json:"bank_code,omitempty"`
+	RecipientCode string         `json:"recipient_code"` 
 	IsDefault     bool           `gorm:"default:false" json:"is_default"`
 	CreatedAt     time.Time      `json:"created_at"`
 	UpdatedAt     time.Time      `json:"updated_at"`
