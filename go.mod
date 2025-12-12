@@ -23,7 +23,9 @@ require (
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
+	github.com/mitchellh/mapstructure v0.0.0-20170125051937-db1efb556f84 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
+	github.com/rpip/paystack-go v0.0.0-20210725234520-196191f8ab58 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.51.0 // indirect
 	github.com/valyala/tcplisten v1.0.0 // indirect

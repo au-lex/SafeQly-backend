@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"math/rand"
+	"os"
 	"strings"
 	"time"
 
@@ -216,8 +217,8 @@ func VerifySignupOTP(c *fiber.Ctx) error {
 			"full_name":  user.FullName,
 			"email":      user.Email,
 			"phone":      user.Phone,
-			"user_tag":   user.UserTag,  // ADD THIS
-			"balance":    user.Balance,   // ADD THIS
+			"user_tag":   user.UserTag,
+			"balance":    user.Balance,
 			"created_at": user.CreatedAt,
 		},
 	})
@@ -322,8 +323,8 @@ func Login(c *fiber.Ctx) error {
 			"full_name": user.FullName,
 			"email":     user.Email,
 			"phone":     user.Phone,
-			"user_tag":  user.UserTag,  // ADD THIS
-			"balance":   user.Balance,   // ADD THIS
+			"user_tag":  user.UserTag,
+			"balance":   user.Balance,
 		},
 	})
 }
@@ -419,7 +420,7 @@ func ResetPassword(c *fiber.Ctx) error {
 	})
 }
 
-// Helper function
+// Helper function 
 func generateJWT(userID uint, email string) (string, error) {
 	claims := jwt.MapClaims{
 		"user_id": userID,
@@ -428,5 +429,12 @@ func generateJWT(userID uint, email string) (string, error) {
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte("your-secret-key")) // Use env variable in production
+	
+	// USE ENVIRONMENT VARIABLE - MATCHES MIDDLEWARE
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		return "", fmt.Errorf("JWT_SECRET environment variable not set")
+	}
+	
+	return token.SignedString([]byte(secret))
 }
