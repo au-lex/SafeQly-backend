@@ -68,6 +68,7 @@ func SearchUserByTag(c *fiber.Ctx) error {
 }
 
 // CreateEscrow creates a new escrow transaction
+// Money is moved from buyer's balance to buyer's escrow_balance
 func CreateEscrow(c *fiber.Ctx) error {
 	req := new(CreateEscrowRequest)
 	if err := c.BodyParser(req); err != nil {
@@ -105,45 +106,54 @@ func CreateEscrow(c *fiber.Ctx) error {
 
 	if buyer.Balance < req.Amount {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": fmt.Sprintf("Insufficient balance. You have $%.2f but need $%.2f", buyer.Balance, req.Amount),
+			"error": fmt.Sprintf("Insufficient balance. You have ₦%.2f but need ₦%.2f", buyer.Balance, req.Amount),
 		})
 	}
 
-	escrow := models.Escrow{
-		BuyerID:      buyerID,
-		SellerID:     seller.ID,
-		Items:        req.Items,
-		Amount:       req.Amount,
-		DeliveryDate: req.DeliveryDate,
-		AttachedFile: req.AttachedFile,
-		Status:       models.EscrowPending,
-	}
+	// Use database transaction for atomicity
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		// Create escrow record
+		escrow := models.Escrow{
+			BuyerID:      buyerID,
+			SellerID:     seller.ID,
+			Items:        req.Items,
+			Amount:       req.Amount,
+			DeliveryDate: req.DeliveryDate,
+			AttachedFile: req.AttachedFile,
+			Status:       models.EscrowPending,
+		}
 
-	if err := database.DB.Create(&escrow).Error; err != nil {
+		if err := tx.Create(&escrow).Error; err != nil {
+			return err
+		}
+
+		// Move funds from buyer's balance to escrow_balance
+		buyer.Balance -= req.Amount
+		buyer.EscrowBalance += req.Amount
+		
+		if err := tx.Save(&buyer).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to create escrow",
 		})
 	}
 
-	buyer.Balance -= req.Amount
-	if err := database.DB.Save(&buyer).Error; err != nil {
-		database.DB.Delete(&escrow)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to deduct amount from balance",
-		})
-	}
-
-	database.DB.Preload("Buyer").Preload("Seller").First(&escrow, escrow.ID)
+	// Reload buyer to get updated balances
+	database.DB.First(&buyer, buyerID)
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"message": "Escrow created successfully. Waiting for seller to accept.",
 		"escrow": fiber.Map{
-			"id":            escrow.ID,
-			"items":         escrow.Items,
-			"amount":        escrow.Amount,
-			"delivery_date": escrow.DeliveryDate,
-			"status":        escrow.Status,
-			"created_at":    escrow.CreatedAt,
+			"items":         req.Items,
+			"amount":        req.Amount,
+			"delivery_date": req.DeliveryDate,
+			"status":        models.EscrowPending,
 			"seller": fiber.Map{
 				"id":     seller.ID,
 				"name":   seller.FullName,
@@ -151,7 +161,8 @@ func CreateEscrow(c *fiber.Ctx) error {
 				"avatar": seller.Avatar,
 			},
 		},
-		"new_balance": buyer.Balance,
+		"available_balance": buyer.Balance,
+		"escrow_balance":    buyer.EscrowBalance,
 	})
 }
 
@@ -205,6 +216,7 @@ func AcceptEscrow(c *fiber.Ctx) error {
 }
 
 // RejectEscrow - Seller rejects the escrow
+// Money is returned from buyer's escrow_balance to balance
 func RejectEscrow(c *fiber.Ctx) error {
 	escrowID := c.Params("id")
 	userID := c.Locals("user_id").(uint)
@@ -240,24 +252,33 @@ func RejectEscrow(c *fiber.Ctx) error {
 		})
 	}
 
-	var buyer models.User
-	if err := database.DB.First(&buyer, escrow.BuyerID).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to retrieve buyer information",
-		})
-	}
+	// Use database transaction
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		var buyer models.User
+		if err := tx.First(&buyer, escrow.BuyerID).Error; err != nil {
+			return err
+		}
 
-	buyer.Balance += escrow.Amount
-	if err := database.DB.Save(&buyer).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to refund amount",
-		})
-	}
+		// Return funds from escrow_balance to balance
+		buyer.EscrowBalance -= escrow.Amount
+		buyer.Balance += escrow.Amount
+		
+		if err := tx.Save(&buyer).Error; err != nil {
+			return err
+		}
 
-	escrow.Status = models.EscrowRejected
-	escrow.RejectionReason = req.Reason
-	
-	if err := database.DB.Save(&escrow).Error; err != nil {
+		// Update escrow status
+		escrow.Status = models.EscrowRejected
+		escrow.RejectionReason = req.Reason
+		
+		if err := tx.Save(&escrow).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to reject escrow",
 		})
@@ -323,6 +344,7 @@ func CompleteEscrow(c *fiber.Ctx) error {
 }
 
 // ReleaseEscrow - Buyer releases funds to seller
+// Money moves from buyer's escrow_balance to seller's balance
 func ReleaseEscrow(c *fiber.Ctx) error {
 	escrowID := c.Params("id")
 	userID := c.Locals("user_id").(uint)
@@ -351,27 +373,44 @@ func ReleaseEscrow(c *fiber.Ctx) error {
 		})
 	}
 
-	var seller models.User
-	if err := database.DB.First(&seller, escrow.SellerID).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to retrieve seller information",
-		})
-	}
+	// Use database transaction
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		// Get buyer and seller
+		var buyer, seller models.User
+		if err := tx.First(&buyer, escrow.BuyerID).Error; err != nil {
+			return err
+		}
+		if err := tx.First(&seller, escrow.SellerID).Error; err != nil {
+			return err
+		}
 
-	seller.Balance += escrow.Amount
-	if err := database.DB.Save(&seller).Error; err != nil {
+		// Remove from buyer's escrow balance
+		buyer.EscrowBalance -= escrow.Amount
+		if err := tx.Save(&buyer).Error; err != nil {
+			return err
+		}
+
+		// Add to seller's available balance
+		seller.Balance += escrow.Amount
+		if err := tx.Save(&seller).Error; err != nil {
+			return err
+		}
+
+		// Update escrow status
+		now := time.Now()
+		escrow.Status = models.EscrowReleased
+		escrow.ReleasedAt = &now
+		
+		if err := tx.Save(&escrow).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to release funds",
-		})
-	}
-
-	now := time.Now()
-	escrow.Status = models.EscrowReleased
-	escrow.ReleasedAt = &now
-	
-	if err := database.DB.Save(&escrow).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to update escrow status",
 		})
 	}
 
