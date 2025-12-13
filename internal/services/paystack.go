@@ -130,6 +130,11 @@ type ResolveAccountResponse struct {
 	} `json:"data"`
 }
 
+
+func (ps *PaystackService) GetSecretKey() string {
+	return ps.SecretKey
+}
+
 // NewPaystackService creates a new Paystack service instance
 func NewPaystackService() *PaystackService {
 	return &PaystackService{

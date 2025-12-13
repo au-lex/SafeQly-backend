@@ -14,6 +14,7 @@ type User struct {
 	UserTag           string         `gorm:"uniqueIndex;not null" json:"user_tag"`
 	Avatar            string         `gorm:"type:text" json:"avatar,omitempty"`
 	Balance           float64        `gorm:"default:0" json:"balance"`
+	EscrowBalance     float64        `gorm:"default:0" json:"escrow_balance"` 
 	IsEmailVerified   bool           `gorm:"default:false" json:"is_email_verified"`
 	OTP               string         `gorm:"index" json:"-"`
 	OTPExpiry         *time.Time     `json:"-"`

@@ -7,29 +7,42 @@ import (
 )
 
 func SetupWalletRoutes(app *fiber.App) {
-	wallet := app.Group("/api/wallet", middleware.Protected())
+	wallet := app.Group("/api/wallet")
 	
-	// Wallet balance
-	wallet.Get("/balance", handlers.GetWalletBalance)
 
-	// Funding with Paystack
-	wallet.Post("/fund", handlers.FundAccount)
-	wallet.Get("/paystack/callback", handlers.PaystackCallback) // Paystack callback
+	
+	// Paystack webhook 
+	wallet.Post("/paystack/webhook", handlers.PaystackWebhook)
+	
+	// Paystack callback 
+	wallet.Get("/paystack/callback", handlers.PaystackCallback)
+	
 
-	// Bank utilities
-	wallet.Get("/banks", handlers.GetBanks) // Get list of banks
-	wallet.Get("/resolve-account", handlers.ResolveAccountNumber) // Verify account number
-
-	// Bank accounts
-	wallet.Post("/bank-account", handlers.AddBankAccount)
-	wallet.Get("/bank-accounts", handlers.GetBankAccounts)
-	wallet.Put("/bank-account/:id/set-default", handlers.SetDefaultBankAccount)
-	wallet.Delete("/bank-account/:id", handlers.DeleteBankAccount)
-
-	// Withdrawal with Paystack
-	wallet.Post("/withdraw", handlers.WithdrawFunds)
-
-	// Transaction history
-	wallet.Get("/transactions", handlers.GetTransactionHistory)
-	wallet.Get("/transaction/:id", handlers.GetTransactionByID)
+	// PROTECTED ENDPOINTS 
+	
+	protected := wallet.Group("", middleware.Protected())
+	
+	// Wallet Balance
+	protected.Get("/balance", handlers.GetWalletBalance)
+	
+	// Funding
+	protected.Post("/fund", handlers.FundAccount)
+	
+	// Bank Utilities
+	protected.Get("/banks", handlers.GetBanks)
+	protected.Get("/resolve-account", handlers.ResolveAccountNumber)
+	
+	// Bank Accounts
+	protected.Post("/bank-account", handlers.AddBankAccount)
+	protected.Get("/bank-accounts", handlers.GetBankAccounts)
+	protected.Put("/bank-account/:id/set-default", handlers.SetDefaultBankAccount)
+	protected.Delete("/bank-account/:id", handlers.DeleteBankAccount)
+	
+	// Withdrawals
+	protected.Post("/withdraw", handlers.WithdrawFunds)
+	
+	// Transactions
+	protected.Get("/transactions", handlers.GetTransactionHistory)
+	protected.Get("/transaction/:id", handlers.GetTransactionByID)
+	protected.Get("/transaction-status", handlers.GetTransactionByReference)
 }

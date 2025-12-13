@@ -1,7 +1,12 @@
 package handlers
 
 import (
+	"crypto/hmac"
+	"crypto/sha512"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	// "io"
 	"math/rand"
 	"time"
 
@@ -15,11 +20,11 @@ import (
 
 var paystackService *services.PaystackService
 
-
 func InitPaystackService() {
 	paystackService = services.NewPaystackService()
 }
 
+// Request structs
 type FundAccountRequest struct {
 	Amount          float64 `json:"amount" validate:"required,gt=0"`
 	PaymentMethod   string  `json:"payment_method" validate:"required"`
@@ -38,7 +43,64 @@ type AddBankAccountRequest struct {
 	BankCode      string `json:"bank_code" validate:"required"`
 }
 
-// GetWalletBalance retrieves user's wallet balance
+// Webhook payload structs
+type PaystackWebhookPayload struct {
+	Event string          `json:"event"`
+	Data  json.RawMessage `json:"data"`
+}
+
+type PaystackChargeData struct {
+	ID              int64  `json:"id"`
+	Domain          string `json:"domain"`
+	Status          string `json:"status"`
+	Reference       string `json:"reference"`
+	Amount          int64  `json:"amount"`
+	Message         string `json:"message"`
+	GatewayResponse string `json:"gateway_response"`
+	PaidAt          string `json:"paid_at"`
+	CreatedAt       string `json:"created_at"`
+	Channel         string `json:"channel"`
+	Currency        string `json:"currency"`
+	Customer        struct {
+		ID           int64  `json:"id"`
+		Email        string `json:"email"`
+		CustomerCode string `json:"customer_code"`
+	} `json:"customer"`
+}
+
+type PaystackTransferData struct {
+	Amount        int64  `json:"amount"`
+	Currency      string `json:"currency"`
+	Domain        string `json:"domain"`
+	Failures      string `json:"failures"`
+	ID            int64  `json:"id"`
+	Reason        string `json:"reason"`
+	Reference     string `json:"reference"`
+	Source        string `json:"source"`
+	SourceDetails string `json:"source_details"`
+	Status        string `json:"status"`
+	TransferCode  string `json:"transfer_code"`
+	TransferredAt string `json:"transferred_at"`
+	Recipient     struct {
+		Domain   string `json:"domain"`
+		Type     string `json:"type"`
+		Currency string `json:"currency"`
+		Name     string `json:"name"`
+		Details  struct {
+			AccountNumber string `json:"account_number"`
+			AccountName   string `json:"account_name"`
+			BankCode      string `json:"bank_code"`
+			BankName      string `json:"bank_name"`
+		} `json:"details"`
+		RecipientCode string `json:"recipient_code"`
+	} `json:"recipient"`
+}
+
+// ============================================================================
+// WALLET BALANCE
+// ============================================================================
+// Update the GetWalletBalance function in wallet.go
+
 func GetWalletBalance(c *fiber.Ctx) error {
 	userID := c.Locals("user_id").(uint)
 
@@ -50,7 +112,9 @@ func GetWalletBalance(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"balance": user.Balance,
+		"available_balance": user.Balance,        // Money available for use
+		"escrow_balance":    user.EscrowBalance,  // Money locked in escrow
+		"total_balance":     user.Balance + user.EscrowBalance, // Total funds
 		"user": fiber.Map{
 			"id":        user.ID,
 			"full_name": user.FullName,
@@ -60,7 +124,10 @@ func GetWalletBalance(c *fiber.Ctx) error {
 	})
 }
 
-// FundAccount initiates a deposit/funding transaction with Paystack
+// ============================================================================
+// FUNDING / DEPOSITS
+// ============================================================================
+
 func FundAccount(c *fiber.Ctx) error {
 	req := new(FundAccountRequest)
 	if err := c.BodyParser(req); err != nil {
@@ -71,7 +138,6 @@ func FundAccount(c *fiber.Ctx) error {
 
 	userID := c.Locals("user_id").(uint)
 
-	// Get user details
 	var user models.User
 	if err := database.DB.First(&user, userID).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -79,17 +145,14 @@ func FundAccount(c *fiber.Ctx) error {
 		})
 	}
 
-	// Validate minimum amount
 	if req.Amount < 100 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Minimum deposit amount is ₦100",
 		})
 	}
 
-	// Generate unique reference
 	reference := generateTransactionReference("DEP")
 
-	// Create transaction record
 	transaction := models.Transaction{
 		UserID:          userID,
 		Type:            models.TransactionDeposit,
@@ -107,9 +170,8 @@ func FundAccount(c *fiber.Ctx) error {
 		})
 	}
 
-	// Initialize Paystack payment
 	callbackURL := fmt.Sprintf("http://localhost:8080/api/wallet/paystack/callback?reference=%s", reference)
-	
+
 	paymentResp, err := paystackService.InitializePayment(
 		user.Email,
 		req.Amount,
@@ -118,7 +180,6 @@ func FundAccount(c *fiber.Ctx) error {
 	)
 
 	if err != nil {
-		// Update transaction status to failed
 		transaction.Status = models.TransactionFailed
 		database.DB.Save(&transaction)
 
@@ -144,7 +205,7 @@ func FundAccount(c *fiber.Ctx) error {
 	})
 }
 
-// PaystackCallback handles Paystack payment callback/webhook
+// PaystackCallback handles user redirect after payment (doesn't credit wallet)
 func PaystackCallback(c *fiber.Ctx) error {
 	reference := c.Query("reference")
 	if reference == "" {
@@ -153,34 +214,115 @@ func PaystackCallback(c *fiber.Ctx) error {
 		})
 	}
 
-	// Verify payment with Paystack
+	// Just verify payment status with Paystack
 	verifyResp, err := paystackService.VerifyPayment(reference)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": fmt.Sprintf("Failed to verify payment: %v", err),
+			"error":   "Failed to verify payment",
+			"message": "Please contact support if money was deducted",
 		})
 	}
 
-	// Check if payment was successful
-	if verifyResp.Data.Status != "success" {
+	// Return payment status - webhook will handle crediting
+	if verifyResp.Data.Status == "success" {
+		return c.JSON(fiber.Map{
+			"message":   "Payment successful! Your wallet will be credited shortly.",
+			"reference": reference,
+			"status":    verifyResp.Data.Status,
+			"amount":    float64(verifyResp.Data.Amount) / 100,
+			"note":      "Processing in progress... Check your balance in a moment.",
+		})
+	}
+
+	return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+		"error":     "Payment was not successful",
+		"status":    verifyResp.Data.Status,
+		"reference": reference,
+	})
+}
+
+// ============================================================================
+// WEBHOOK HANDLERS
+// ============================================================================
+
+func PaystackWebhook(c *fiber.Ctx) error {
+	// Verify webhook signature
+	signature := c.Get("x-paystack-signature")
+	if signature == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Payment was not successful",
-			"status": verifyResp.Data.Status,
+			"error": "Missing signature",
 		})
 	}
 
-	// Find transaction
+	body := c.Body()
+
+	// Verify signature
+	if !verifyPaystackSignature(body, signature, paystackService.SecretKey) {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "Invalid signature",
+		})
+	}
+
+	// Parse webhook payload
+	var payload PaystackWebhookPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid payload",
+		})
+	}
+
+	// Handle different event types
+	switch payload.Event {
+	case "charge.success":
+		return handleChargeSuccess(c, payload.Data)
+	case "transfer.success":
+		return handleTransferSuccess(c, payload.Data)
+	case "transfer.failed":
+		return handleTransferFailed(c, payload.Data)
+	case "transfer.reversed":
+		return handleTransferFailed(c, payload.Data)
+	default:
+		fmt.Printf("Unhandled webhook event: %s\n", payload.Event)
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{
+			"message": "Event received",
+		})
+	}
+}
+
+func verifyPaystackSignature(payload []byte, signature, secretKey string) bool {
+	mac := hmac.New(sha512.New, []byte(secretKey))
+	mac.Write(payload)
+	expectedSignature := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(signature), []byte(expectedSignature))
+}
+
+func handleChargeSuccess(c *fiber.Ctx, data json.RawMessage) error {
+	var chargeData PaystackChargeData
+	if err := json.Unmarshal(data, &chargeData); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid charge data",
+		})
+	}
+
+	if chargeData.Status != "success" {
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{
+			"message": "Charge not successful",
+		})
+	}
+
+	// Find transaction by reference
 	var transaction models.Transaction
-	if err := database.DB.Where("reference = ?", reference).First(&transaction).Error; err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-			"error": "Transaction not found",
+	if err := database.DB.Where("reference = ?", chargeData.Reference).First(&transaction).Error; err != nil {
+		fmt.Printf("Transaction not found: %s\n", chargeData.Reference)
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{
+			"message": "Transaction not found",
 		})
 	}
 
-	// Check if already completed
+	// Check if already processed (prevent double credit)
 	if transaction.Status == models.TransactionCompleted {
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{
-			"message": "Payment already processed",
+			"message": "Already processed",
 		})
 	}
 
@@ -188,47 +330,132 @@ func PaystackCallback(c *fiber.Ctx) error {
 	var user models.User
 	if err := database.DB.First(&user, transaction.UserID).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to retrieve user",
+			"error": "User not found",
 		})
 	}
 
 	// Convert amount from kobo to naira
-	amountPaid := float64(verifyResp.Data.Amount) / 100
+	amountPaid := float64(chargeData.Amount) / 100
 
-	// Credit user's account
-	user.Balance += amountPaid
-	if err := database.DB.Save(&user).Error; err != nil {
+	// Use database transaction for atomicity
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		// Credit user's account
+		user.Balance += amountPaid
+		if err := tx.Save(&user).Error; err != nil {
+			return err
+		}
+
+		// Update transaction status
+		now := time.Now()
+		transaction.Status = models.TransactionCompleted
+		transaction.CompletedAt = &now
+		transaction.Amount = amountPaid
+
+		if err := tx.Save(&transaction).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		fmt.Printf("Failed to process payment: %v\n", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to update balance",
+			"error": "Failed to process payment",
 		})
 	}
 
-	// Update transaction status
-	now := time.Now()
-	transaction.Status = models.TransactionCompleted
-	transaction.CompletedAt = &now
-	transaction.Amount = amountPaid // Update with actual amount paid
+	fmt.Printf("✅ Payment successful: %s - ₦%.2f credited to user %d\n",
+		chargeData.Reference, amountPaid, user.ID)
 
-	if err := database.DB.Save(&transaction).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to update transaction",
-		})
-	}
-
-	return c.JSON(fiber.Map{
-		"message": "Payment verified and wallet credited successfully",
-		"transaction": fiber.Map{
-			"id":           transaction.ID,
-			"reference":    transaction.Reference,
-			"amount":       transaction.Amount,
-			"status":       transaction.Status,
-			"completed_at": transaction.CompletedAt,
-		},
-		"new_balance": user.Balance,
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"message": "Payment processed",
 	})
 }
 
-// GetBanks retrieves list of Nigerian banks
+func handleTransferSuccess(c *fiber.Ctx, data json.RawMessage) error {
+	var transferData PaystackTransferData
+	if err := json.Unmarshal(data, &transferData); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid transfer data",
+		})
+	}
+
+	var transaction models.Transaction
+	if err := database.DB.Where("reference = ?", transferData.Reference).First(&transaction).Error; err != nil {
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{
+			"message": "Transaction not found",
+		})
+	}
+
+	now := time.Now()
+	transaction.Status = models.TransactionCompleted
+	transaction.CompletedAt = &now
+	database.DB.Save(&transaction)
+
+	fmt.Printf("✅ Transfer successful: %s\n", transferData.Reference)
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"message": "Transfer completed",
+	})
+}
+
+func handleTransferFailed(c *fiber.Ctx, data json.RawMessage) error {
+	var transferData PaystackTransferData
+	if err := json.Unmarshal(data, &transferData); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid transfer data",
+		})
+	}
+
+	var transaction models.Transaction
+	if err := database.DB.Where("reference = ?", transferData.Reference).First(&transaction).Error; err != nil {
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{
+			"message": "Transaction not found",
+		})
+	}
+
+	var user models.User
+	if err := database.DB.First(&user, transaction.UserID).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "User not found",
+		})
+	}
+
+	// Refund user (use database transaction)
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		user.Balance += transaction.Amount
+		if err := tx.Save(&user).Error; err != nil {
+			return err
+		}
+
+		transaction.Status = models.TransactionFailed
+		if err := tx.Save(&transaction).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		fmt.Printf("Failed to refund: %v\n", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to process refund",
+		})
+	}
+
+	fmt.Printf("⚠️ Transfer failed: %s - ₦%.2f refunded to user %d\n",
+		transferData.Reference, transaction.Amount, user.ID)
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"message": "Transfer failed, refunded",
+	})
+}
+
+// ============================================================================
+// BANKS
+// ============================================================================
+
 func GetBanks(c *fiber.Ctx) error {
 	banks, err := paystackService.GetBanks("nigeria")
 	if err != nil {
@@ -243,7 +470,6 @@ func GetBanks(c *fiber.Ctx) error {
 	})
 }
 
-// ResolveAccountNumber verifies and resolves bank account details
 func ResolveAccountNumber(c *fiber.Ctx) error {
 	accountNumber := c.Query("account_number")
 	bankCode := c.Query("bank_code")
@@ -267,7 +493,10 @@ func ResolveAccountNumber(c *fiber.Ctx) error {
 	})
 }
 
-// AddBankAccount adds a bank account for withdrawals
+// ============================================================================
+// BANK ACCOUNTS
+// ============================================================================
+
 func AddBankAccount(c *fiber.Ctx) error {
 	req := new(AddBankAccountRequest)
 	if err := c.BodyParser(req); err != nil {
@@ -315,10 +544,10 @@ func AddBankAccount(c *fiber.Ctx) error {
 		UserID:        userID,
 		BankName:      req.BankName,
 		AccountNumber: req.AccountNumber,
-		AccountName:   resolved.Data.AccountName, // Use verified name from Paystack
+		AccountName:   resolved.Data.AccountName,
 		BankCode:      req.BankCode,
-		RecipientCode: recipientResp.Data.RecipientCode, // Store Paystack recipient code
-		IsDefault:     count == 0, // First account becomes default
+		RecipientCode: recipientResp.Data.RecipientCode,
+		IsDefault:     count == 0,
 	}
 
 	if err := database.DB.Create(&bankAccount).Error; err != nil {
@@ -333,7 +562,6 @@ func AddBankAccount(c *fiber.Ctx) error {
 	})
 }
 
-// GetBankAccounts retrieves all bank accounts for the user
 func GetBankAccounts(c *fiber.Ctx) error {
 	userID := c.Locals("user_id").(uint)
 
@@ -350,7 +578,6 @@ func GetBankAccounts(c *fiber.Ctx) error {
 	})
 }
 
-// SetDefaultBankAccount sets a bank account as default
 func SetDefaultBankAccount(c *fiber.Ctx) error {
 	accountID := c.Params("id")
 	userID := c.Locals("user_id").(uint)
@@ -384,7 +611,6 @@ func SetDefaultBankAccount(c *fiber.Ctx) error {
 	})
 }
 
-// DeleteBankAccount removes a bank account
 func DeleteBankAccount(c *fiber.Ctx) error {
 	accountID := c.Params("id")
 	userID := c.Locals("user_id").(uint)
@@ -412,7 +638,10 @@ func DeleteBankAccount(c *fiber.Ctx) error {
 	})
 }
 
-// WithdrawFunds initiates a withdrawal with Paystack
+// ============================================================================
+// WITHDRAWALS
+// ============================================================================
+
 func WithdrawFunds(c *fiber.Ctx) error {
 	req := new(WithdrawRequest)
 	if err := c.BodyParser(req); err != nil {
@@ -423,14 +652,12 @@ func WithdrawFunds(c *fiber.Ctx) error {
 
 	userID := c.Locals("user_id").(uint)
 
-	// Validate minimum withdrawal
 	if req.Amount < 100 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Minimum withdrawal amount is ₦100",
 		})
 	}
 
-	// Get user
 	var user models.User
 	if err := database.DB.First(&user, userID).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -438,14 +665,12 @@ func WithdrawFunds(c *fiber.Ctx) error {
 		})
 	}
 
-	// Check balance
 	if user.Balance < req.Amount {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": fmt.Sprintf("Insufficient balance. You have ₦%.2f", user.Balance),
 		})
 	}
 
-	// Get bank account
 	var bankAccount models.BankAccount
 	if err := database.DB.Where("id = ? AND user_id = ?", req.BankAccountID, userID).First(&bankAccount).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -458,10 +683,8 @@ func WithdrawFunds(c *fiber.Ctx) error {
 		})
 	}
 
-	// Generate reference
 	reference := generateTransactionReference("WTH")
 
-	// Create transaction
 	transaction := models.Transaction{
 		UserID:        userID,
 		Type:          models.TransactionWithdrawal,
@@ -536,7 +759,10 @@ func WithdrawFunds(c *fiber.Ctx) error {
 	})
 }
 
-// GetTransactionHistory retrieves user's transaction history
+// ============================================================================
+// TRANSACTIONS
+// ============================================================================
+
 func GetTransactionHistory(c *fiber.Ctx) error {
 	userID := c.Locals("user_id").(uint)
 	txType := c.Query("type")
@@ -560,7 +786,6 @@ func GetTransactionHistory(c *fiber.Ctx) error {
 	})
 }
 
-// GetTransactionByID retrieves a specific transaction
 func GetTransactionByID(c *fiber.Ctx) error {
 	txID := c.Params("id")
 	userID := c.Locals("user_id").(uint)
@@ -582,7 +807,39 @@ func GetTransactionByID(c *fiber.Ctx) error {
 	})
 }
 
-// Helper function to generate transaction reference
+func GetTransactionByReference(c *fiber.Ctx) error {
+	reference := c.Query("reference")
+	if reference == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Reference is required",
+		})
+	}
+
+	userID := c.Locals("user_id").(uint)
+
+	var transaction models.Transaction
+	if err := database.DB.Where("reference = ? AND user_id = ?", reference, userID).First(&transaction).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"error": "Transaction not found",
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Database error",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"transaction": transaction,
+		"status":      transaction.Status,
+		"completed":   transaction.Status == models.TransactionCompleted,
+	})
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
 func generateTransactionReference(prefix string) string {
 	rand.Seed(time.Now().UnixNano())
 	timestamp := time.Now().Unix()
