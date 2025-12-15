@@ -1,4 +1,3 @@
-
 package middleware
 
 import (
@@ -11,7 +10,6 @@ import (
 
 func Protected() fiber.Handler {
     return func(c *fiber.Ctx) error {
-        // Get token from Authorization header
         authHeader := c.Get("Authorization")
         if authHeader == "" {
             return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -19,12 +17,9 @@ func Protected() fiber.Handler {
             })
         }
 
-        // Extract token from "Bearer <token>"
         tokenString := strings.Replace(authHeader, "Bearer ", "", 1)
         
-        // Parse and validate token
         token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-            // Validate signing method
             if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
                 return nil, fiber.NewError(fiber.StatusUnauthorized, "Invalid token")
             }
@@ -37,12 +32,26 @@ func Protected() fiber.Handler {
             })
         }
 
-        // Extract claims
         if claims, ok := token.Claims.(jwt.MapClaims); ok {
             c.Locals("user_id", uint(claims["user_id"].(float64)))
             c.Locals("email", claims["email"].(string))
+            if role, exists := claims["role"]; exists {
+                c.Locals("role", role.(string))
+            }
         }
 
+        return c.Next()
+    }
+}
+
+func AdminOnly() fiber.Handler {
+    return func(c *fiber.Ctx) error {
+        role := c.Locals("role")
+        if role == nil || role.(string) != "admin" {
+            return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+                "error": "Admin access required",
+            })
+        }
         return c.Next()
     }
 }

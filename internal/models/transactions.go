@@ -26,6 +26,7 @@ const (
 type Transaction struct {
 	ID              uint              `gorm:"primarykey" json:"id"`
 	UserID          uint              `gorm:"not null;index" json:"user_id"`
+	EscrowID        *uint             `gorm:"index" json:"escrow_id,omitempty"` 
 	Type            TransactionType   `gorm:"type:varchar(20);not null" json:"type"`
 	Amount          float64           `gorm:"not null" json:"amount"`
 	Status          TransactionStatus `gorm:"type:varchar(20);not null;default:'pending'" json:"status"`
@@ -41,7 +42,9 @@ type Transaction struct {
 	UpdatedAt       time.Time         `json:"updated_at"`
 	DeletedAt       gorm.DeletedAt    `gorm:"index" json:"-"`
 	
-	User User `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	// Relations
+	User   User    `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	Escrow *Escrow `gorm:"foreignKey:EscrowID" json:"escrow,omitempty"` 
 }
 
 func (Transaction) TableName() string {

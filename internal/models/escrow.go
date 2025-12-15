@@ -39,8 +39,10 @@ type Escrow struct {
 	ReleasedAt      *time.Time     `json:"released_at,omitempty"`
 	DeletedAt       gorm.DeletedAt `gorm:"index" json:"-"`
 	
-	Buyer  User `gorm:"foreignKey:BuyerID" json:"buyer,omitempty"`
-	Seller User `gorm:"foreignKey:SellerID" json:"seller,omitempty"`
+	// Relations
+	Buyer        User          `gorm:"foreignKey:BuyerID" json:"buyer,omitempty"`
+	Seller       User          `gorm:"foreignKey:SellerID" json:"seller,omitempty"`
+	Transactions []Transaction `gorm:"foreignKey:EscrowID" json:"transactions,omitempty"` 
 }
 
 func (Escrow) TableName() string {

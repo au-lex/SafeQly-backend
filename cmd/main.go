@@ -28,6 +28,7 @@ func main() {
 	log.Printf("   JWT_SECRET: '%s'", maskPassword(os.Getenv("JWT_SECRET")))
 	log.Printf("   PAYSTACK_SECRET_KEY: '%s'", maskPassword(os.Getenv("PAYSTACK_SECRET_KEY")))
 	log.Printf("   CLOUDINARY_CLOUD_NAME: '%s'", os.Getenv("CLOUDINARY_CLOUD_NAME"))
+	log.Printf("   ADMIN_SETUP_KEY: '%s'", maskPassword(os.Getenv("ADMIN_SETUP_KEY")))
 
 	// Connect to database
 	if err := database.Connect(); err != nil {
@@ -54,7 +55,7 @@ func main() {
 	// Create Fiber app
 	app := fiber.New(fiber.Config{
 		AppName:   "SafeQly API v1.0",
-		BodyLimit: 10 * 1024 * 1024, // 10MB max body size for file uploads
+		BodyLimit: 10 * 1024 * 1024, 
 	})
 
 	// Middleware
@@ -88,6 +89,7 @@ func main() {
 	routes.SetupWalletRoutes(app)
 	routes.SetupEscrowRoutes(app)
 	routes.SetupDisputeRoutes(app)
+	routes.SetupAdminRoutes(app) 
 
 	// Start server
 	port := os.Getenv("PORT")
