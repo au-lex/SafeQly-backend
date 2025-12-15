@@ -30,6 +30,8 @@ type Dispute struct {
 	Reason      DisputeReason  `gorm:"type:varchar(50);not null" json:"reason"`
 	Description string         `gorm:"type:text;not null" json:"description"`
 	Evidence    string         `gorm:"type:text" json:"evidence,omitempty"`
+	EvidencePublicID  string `json:"evidence_public_id,omitempty"`
+  EvidenceFileName  string `json:"evidence_file_name,omitempty"` 
 	Status      DisputeStatus  `gorm:"type:varchar(20);not null;default:'open'" json:"status"`
 	Resolution  string         `gorm:"type:text" json:"resolution,omitempty"`
 	ResolvedBy  *uint          `gorm:"index" json:"resolved_by,omitempty"`
