@@ -14,8 +14,15 @@ type User struct {
 	UserTag           string         `gorm:"uniqueIndex;not null" json:"user_tag"`
 	Avatar            string         `gorm:"type:text" json:"avatar,omitempty"`
 	Balance           float64        `gorm:"default:0" json:"balance"`
-	EscrowBalance     float64        `gorm:"default:0" json:"escrow_balance"` 
+	EscrowBalance     float64        `gorm:"default:0" json:"escrow_balance"`
 	IsEmailVerified   bool           `gorm:"default:false" json:"is_email_verified"`
+	
+
+	Role              string         `gorm:"default:'user'" json:"role"` // 'user' or 'admin'
+	IsSuspended       bool           `gorm:"default:false" json:"is_suspended"`
+	SuspendedAt       *time.Time     `json:"suspended_at,omitempty"`
+	SuspendReason     string         `gorm:"type:text" json:"suspend_reason,omitempty"`
+	
 	OTP               string         `gorm:"index" json:"-"`
 	OTPExpiry         *time.Time     `json:"-"`
 	ResetToken        string         `gorm:"index" json:"-"`
@@ -27,6 +34,24 @@ type User struct {
 
 func (User) TableName() string {
 	return "users"
+}
+
+// BeforeCreate hook to set default role
+func (u *User) BeforeCreate(tx *gorm.DB) error {
+	if u.Role == "" {
+		u.Role = "user"
+	}
+	return nil
+}
+
+// IsAdmin checks if user has admin role
+func (u *User) IsAdmin() bool {
+	return u.Role == "admin"
+}
+
+// CanPerformAction checks if user can perform actions
+func (u *User) CanPerformAction() bool {
+	return !u.IsSuspended && u.IsEmailVerified
 }
 
 type PendingUser struct {
