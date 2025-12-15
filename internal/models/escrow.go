@@ -24,7 +24,12 @@ type Escrow struct {
 	Items           string         `gorm:"type:text;not null" json:"items"`
 	Amount          float64        `gorm:"not null" json:"amount"`
 	DeliveryDate    string         `gorm:"not null" json:"delivery_date"`
-	AttachedFile    string         `gorm:"type:text" json:"attached_file,omitempty"`
+	
+	// File storage fields
+	AttachedFileURL      string `gorm:"type:text" json:"attached_file_url,omitempty"`
+	AttachedFilePublicID string `gorm:"type:text" json:"attached_file_public_id,omitempty"`
+	AttachedFileName     string `gorm:"type:varchar(255)" json:"attached_file_name,omitempty"`
+	
 	Status          EscrowStatus   `gorm:"type:varchar(20);not null;default:'pending'" json:"status"`
 	RejectionReason string         `gorm:"type:text" json:"rejection_reason,omitempty"`
 	CreatedAt       time.Time      `json:"created_at"`

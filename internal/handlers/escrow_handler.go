@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -67,20 +68,34 @@ func SearchUserByTag(c *fiber.Ctx) error {
 	})
 }
 
-// CreateEscrow creates a new escrow transaction
-// Money is moved from buyer's balance to buyer's escrow_balance
+// CreateEscrow creates a new escrow transaction with optional file upload
 func CreateEscrow(c *fiber.Ctx) error {
-	req := new(CreateEscrowRequest)
-	if err := c.BodyParser(req); err != nil {
+	// Parse form data
+	sellerTag := c.FormValue("seller_tag")
+	items := c.FormValue("items")
+	amountStr := c.FormValue("amount")
+	deliveryDate := c.FormValue("delivery_date")
+
+	// Validate required fields
+	if sellerTag == "" || items == "" || amountStr == "" || deliveryDate == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid request body",
+			"error": "seller_tag, items, amount, and delivery_date are required",
+		})
+	}
+
+	// Parse amount
+	amount, err := strconv.ParseFloat(amountStr, 64)
+	if err != nil || amount <= 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid amount. Must be a positive number.",
 		})
 	}
 
 	buyerID := c.Locals("user_id").(uint)
 
+	// Find seller
 	var seller models.User
-	if err := database.DB.Where("user_tag = ?", req.SellerTag).First(&seller).Error; err != nil {
+	if err := database.DB.Where("user_tag = ?", sellerTag).First(&seller).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 				"error": "Seller not found",
@@ -97,6 +112,7 @@ func CreateEscrow(c *fiber.Ctx) error {
 		})
 	}
 
+	// Find buyer
 	var buyer models.User
 	if err := database.DB.First(&buyer, buyerID).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -104,32 +120,62 @@ func CreateEscrow(c *fiber.Ctx) error {
 		})
 	}
 
-	if buyer.Balance < req.Amount {
+	if buyer.Balance < amount {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": fmt.Sprintf("Insufficient balance. You have ₦%.2f but need ₦%.2f", buyer.Balance, req.Amount),
+			"error": fmt.Sprintf("Insufficient balance. You have ₦%.2f but need ₦%.2f", buyer.Balance, amount),
 		})
 	}
 
+	// Handle file upload (optional)
+	var fileURL, filePublicID, fileName string
+	file, err := c.FormFile("file")
+	if err == nil && file != nil {
+		// Validate file size (10MB max)
+		maxSize := int64(10 * 1024 * 1024)
+		if file.Size > maxSize {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "File too large. Maximum size is 10MB",
+			})
+		}
+
+		// Upload to Cloudinary
+		result, err := cloudinaryService.UploadFile(file, "safeqly/escrow-files")
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": fmt.Sprintf("Failed to upload file: %v", err),
+			})
+		}
+
+		fileURL = result.SecureURL
+		filePublicID = result.PublicID
+		fileName = file.Filename
+	}
+
 	// Use database transaction for atomicity
-	err := database.DB.Transaction(func(tx *gorm.DB) error {
+	var escrowID uint
+	err = database.DB.Transaction(func(tx *gorm.DB) error {
 		// Create escrow record
 		escrow := models.Escrow{
-			BuyerID:      buyerID,
-			SellerID:     seller.ID,
-			Items:        req.Items,
-			Amount:       req.Amount,
-			DeliveryDate: req.DeliveryDate,
-			AttachedFile: req.AttachedFile,
-			Status:       models.EscrowPending,
+			BuyerID:              buyerID,
+			SellerID:             seller.ID,
+			Items:                items,
+			Amount:               amount,
+			DeliveryDate:         deliveryDate,
+			AttachedFileURL:      fileURL,
+			AttachedFilePublicID: filePublicID,
+			AttachedFileName:     fileName,
+			Status:               models.EscrowPending,
 		}
 
 		if err := tx.Create(&escrow).Error; err != nil {
 			return err
 		}
 
+		escrowID = escrow.ID
+
 		// Move funds from buyer's balance to escrow_balance
-		buyer.Balance -= req.Amount
-		buyer.EscrowBalance += req.Amount
+		buyer.Balance -= amount
+		buyer.EscrowBalance += amount
 		
 		if err := tx.Save(&buyer).Error; err != nil {
 			return err
@@ -139,6 +185,10 @@ func CreateEscrow(c *fiber.Ctx) error {
 	})
 
 	if err != nil {
+		// If transaction failed and file was uploaded, delete it
+		if filePublicID != "" {
+			cloudinaryService.DeleteFile(filePublicID)
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to create escrow",
 		})
@@ -147,12 +197,13 @@ func CreateEscrow(c *fiber.Ctx) error {
 	// Reload buyer to get updated balances
 	database.DB.First(&buyer, buyerID)
 
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+	response := fiber.Map{
 		"message": "Escrow created successfully. Waiting for seller to accept.",
 		"escrow": fiber.Map{
-			"items":         req.Items,
-			"amount":        req.Amount,
-			"delivery_date": req.DeliveryDate,
+			"id":            escrowID,
+			"items":         items,
+			"amount":        amount,
+			"delivery_date": deliveryDate,
 			"status":        models.EscrowPending,
 			"seller": fiber.Map{
 				"id":     seller.ID,
@@ -163,7 +214,18 @@ func CreateEscrow(c *fiber.Ctx) error {
 		},
 		"available_balance": buyer.Balance,
 		"escrow_balance":    buyer.EscrowBalance,
-	})
+	}
+
+	// Add file info if uploaded
+	if fileURL != "" {
+		response["escrow"].(fiber.Map)["attached_file"] = fiber.Map{
+			"url":       fileURL,
+			"filename":  fileName,
+			"public_id": filePublicID,
+		}
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(response)
 }
 
 // AcceptEscrow - Seller accepts the escrow
@@ -343,7 +405,7 @@ func CompleteEscrow(c *fiber.Ctx) error {
 	})
 }
 
-// ReleaseEscrow - Buyer releases funds to seller
+
 // Money moves from buyer's escrow_balance to seller's balance
 func ReleaseEscrow(c *fiber.Ctx) error {
 	escrowID := c.Params("id")

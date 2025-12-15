@@ -1,12 +1,8 @@
 package handlers
 
 import (
-	"encoding/base64"
 	"fmt"
-
-	"os"
-	"path/filepath"
-	"strings"
+	"strconv"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -20,7 +16,6 @@ type RaiseDisputeRequest struct {
 	EscrowID    uint   `json:"escrow_id" validate:"required"`
 	Reason      string `json:"reason" validate:"required"`
 	Description string `json:"description" validate:"required"`
-	Evidence    string `json:"evidence"` // Base64 encoded image or file URL
 }
 
 type ResolveDisputeRequest struct {
@@ -28,12 +23,25 @@ type ResolveDisputeRequest struct {
 	Winner     string `json:"winner" validate:"required,oneof=buyer seller"`
 }
 
-// RaiseDispute allows buyer or seller to raise a dispute
+// RaiseDispute allows buyer or seller to raise a dispute 
 func RaiseDispute(c *fiber.Ctx) error {
-	req := new(RaiseDisputeRequest)
-	if err := c.BodyParser(req); err != nil {
+	// Parse form data
+	escrowIDStr := c.FormValue("escrow_id")
+	reason := c.FormValue("reason")
+	description := c.FormValue("description")
+
+	// Validate required fields
+	if escrowIDStr == "" || reason == "" || description == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid request body",
+			"error": "escrow_id, reason, and description are required",
+		})
+	}
+
+	// Parse escrow_id
+	escrowID, err := strconv.ParseUint(escrowIDStr, 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid escrow_id",
 		})
 	}
 
@@ -41,7 +49,7 @@ func RaiseDispute(c *fiber.Ctx) error {
 
 	// Find escrow
 	var escrow models.Escrow
-	if err := database.DB.First(&escrow, req.EscrowID).Error; err != nil {
+	if err := database.DB.First(&escrow, uint(escrowID)).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 				"error": "Escrow not found",
@@ -68,36 +76,54 @@ func RaiseDispute(c *fiber.Ctx) error {
 
 	// Check if dispute already exists
 	var existingDispute models.Dispute
-	if err := database.DB.Where("escrow_id = ? AND status IN ?", req.EscrowID, []string{"open", "in_progress"}).First(&existingDispute).Error; err == nil {
+	if err := database.DB.Where("escrow_id = ? AND status IN ?", uint(escrowID), []string{"open", "in_progress"}).First(&existingDispute).Error; err == nil {
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
 			"error": "A dispute already exists for this escrow",
 		})
 	}
 
-	// Handle evidence file upload (if provided)
-	var evidenceURL string
-	if req.Evidence != "" {
-		// Save the evidence file
-		savedPath, err := saveEvidenceFile(req.Evidence, userID, req.EscrowID)
-		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": fmt.Sprintf("Failed to save evidence: %v", err),
+	// Handle evidence file upload 
+	var evidenceURL, evidencePublicID, evidenceFileName string
+	file, err := c.FormFile("evidence")
+	if err == nil && file != nil {
+		// Validate file size (10MB max)
+		maxSize := int64(10 * 1024 * 1024)
+		if file.Size > maxSize {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "File too large. Maximum size is 10MB",
 			})
 		}
-		evidenceURL = savedPath
+
+		// Upload to Cloudinary
+		result, err := cloudinaryService.UploadFile(file, "safeqly/dispute-evidence")
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": fmt.Sprintf("Failed to upload evidence file: %v", err),
+			})
+		}
+
+		evidenceURL = result.SecureURL
+		evidencePublicID = result.PublicID
+		evidenceFileName = file.Filename
 	}
 
 	// Create dispute
 	dispute := models.Dispute{
-		EscrowID:    req.EscrowID,
-		RaisedBy:    userID,
-		Reason:      models.DisputeReason(req.Reason),
-		Description: req.Description,
-		Evidence:    evidenceURL,
-		Status:      models.DisputeOpen,
+		EscrowID:          uint(escrowID),
+		RaisedBy:          userID,
+		Reason:            models.DisputeReason(reason),
+		Description:       description,
+		Evidence:          evidenceURL,
+		EvidencePublicID:  evidencePublicID,
+		EvidenceFileName:  evidenceFileName,
+		Status:            models.DisputeOpen,
 	}
 
 	if err := database.DB.Create(&dispute).Error; err != nil {
+		// If dispute creation failed and file was uploaded, delete it
+		if evidencePublicID != "" {
+			cloudinaryService.DeleteFile(evidencePublicID)
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to create dispute",
 		})
@@ -114,21 +140,30 @@ func RaiseDispute(c *fiber.Ctx) error {
 	// Load relationships
 	database.DB.Preload("Escrow").Preload("User").First(&dispute, dispute.ID)
 
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+	response := fiber.Map{
 		"message": "Dispute raised successfully. Our team will review it shortly.",
 		"dispute": fiber.Map{
 			"id":          dispute.ID,
 			"escrow_id":   dispute.EscrowID,
 			"reason":      dispute.Reason,
 			"description": dispute.Description,
-			"evidence":    dispute.Evidence,
 			"status":      dispute.Status,
 			"created_at":  dispute.CreatedAt,
 		},
-	})
+	}
+
+	// Add evidence info if uploaded
+	if evidenceURL != "" {
+		response["dispute"].(fiber.Map)["evidence"] = fiber.Map{
+			"url":       evidenceURL,
+			"filename":  evidenceFileName,
+			"public_id": evidencePublicID,
+		}
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(response)
 }
 
-// UploadDisputeEvidence handles file upload for dispute evidence
 func UploadDisputeEvidence(c *fiber.Ctx) error {
 	// Get file from form
 	file, err := c.FormFile("evidence")
@@ -138,55 +173,27 @@ func UploadDisputeEvidence(c *fiber.Ctx) error {
 		})
 	}
 
-	// Validate file type
-	allowedTypes := map[string]bool{
-		".jpg":  true,
-		".jpeg": true,
-		".png":  true,
-		".pdf":  true,
-	}
-
-	ext := strings.ToLower(filepath.Ext(file.Filename))
-	if !allowedTypes[ext] {
+	// Validate file size (10MB max)
+	maxSize := int64(10 * 1024 * 1024)
+	if file.Size > maxSize {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid file type. Only JPEG, PNG, and PDF are allowed",
+			"error": "File too large. Maximum size is 10MB",
 		})
 	}
 
-	// Validate file size (5MB max)
-	if file.Size > 5*1024*1024 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "File size exceeds 5MB limit",
-		})
-	}
-
-	userID := c.Locals("user_id").(uint)
-	
-	// Create upload directory if it doesn't exist
-	uploadDir := "./uploads/disputes"
-	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+	// Upload to Cloudinary
+	result, err := cloudinaryService.UploadFile(file, "safeqly/dispute-evidence")
+	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to create upload directory",
+			"error": fmt.Sprintf("Failed to upload file: %v", err),
 		})
 	}
-
-	// Generate unique filename
-	filename := fmt.Sprintf("%d_%d%s", userID, time.Now().Unix(), ext)
-	filepath := filepath.Join(uploadDir, filename)
-
-	// Save file
-	if err := c.SaveFile(file, filepath); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to save file",
-		})
-	}
-
-	// Return file URL
-	fileURL := fmt.Sprintf("/uploads/disputes/%s", filename)
 
 	return c.JSON(fiber.Map{
-		"message":  "File uploaded successfully",
-		"file_url": fileURL,
+		"message":   "File uploaded successfully",
+		"file_url":  result.SecureURL,
+		"public_id": result.PublicID,
+		"filename":  file.Filename,
 	})
 }
 
@@ -247,7 +254,7 @@ func GetDisputeByID(c *fiber.Ctx) error {
 	})
 }
 
-// ResolveDispute - Admin resolves the dispute (you can implement admin check later)
+// ResolveDispute - Admin resolves the dispute
 func ResolveDispute(c *fiber.Ctx) error {
 	disputeID := c.Params("id")
 	
@@ -293,31 +300,48 @@ func ResolveDispute(c *fiber.Ctx) error {
 		})
 	}
 
-	// Add amount to winner's balance
-	winner.Balance += dispute.Escrow.Amount
-	if err := database.DB.Save(&winner).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to transfer funds",
-		})
-	}
+	// Use database transaction
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		// Get buyer to update escrow balance
+		var buyer models.User
+		if err := tx.First(&buyer, dispute.Escrow.BuyerID).Error; err != nil {
+			return err
+		}
 
-	// Update dispute
-	now := time.Now()
-	dispute.Status = models.DisputeResolved
-	dispute.Resolution = req.Resolution
-	dispute.ResolvedAt = &now
-	
-	if err := database.DB.Save(&dispute).Error; err != nil {
+		// Remove from buyer's escrow balance
+		buyer.EscrowBalance -= dispute.Escrow.Amount
+		if err := tx.Save(&buyer).Error; err != nil {
+			return err
+		}
+
+		// Add amount to winner's balance
+		winner.Balance += dispute.Escrow.Amount
+		if err := tx.Save(&winner).Error; err != nil {
+			return err
+		}
+
+		// Update dispute
+		now := time.Now()
+		dispute.Status = models.DisputeResolved
+		dispute.Resolution = req.Resolution
+		dispute.ResolvedAt = &now
+		
+		if err := tx.Save(&dispute).Error; err != nil {
+			return err
+		}
+
+		// Update escrow status
+		dispute.Escrow.Status = models.EscrowCancelled
+		if err := tx.Save(&dispute.Escrow).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to resolve dispute",
-		})
-	}
-
-	// Update escrow status
-	dispute.Escrow.Status = models.EscrowCancelled
-	if err := database.DB.Save(&dispute.Escrow).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to update escrow status",
 		})
 	}
 
@@ -331,54 +355,4 @@ func ResolveDispute(c *fiber.Ctx) error {
 			"resolved_at": dispute.ResolvedAt,
 		},
 	})
-}
-
-// Helper function to save evidence file from base64
-func saveEvidenceFile(base64Data string, userID, escrowID uint) (string, error) {
-	// Check if it's a base64 string
-	if !strings.HasPrefix(base64Data, "data:") {
-		// If not base64, assume it's already a URL
-		return base64Data, nil
-	}
-
-	// Parse base64 data
-	parts := strings.Split(base64Data, ",")
-	if len(parts) != 2 {
-		return "", fmt.Errorf("invalid base64 format")
-	}
-
-	// Decode base64
-	decoded, err := base64.StdEncoding.DecodeString(parts[1])
-	if err != nil {
-		return "", err
-	}
-
-	// Determine file extension from mime type
-	var ext string
-	if strings.Contains(parts[0], "image/jpeg") {
-		ext = ".jpg"
-	} else if strings.Contains(parts[0], "image/png") {
-		ext = ".png"
-	} else if strings.Contains(parts[0], "application/pdf") {
-		ext = ".pdf"
-	} else {
-		return "", fmt.Errorf("unsupported file type")
-	}
-
-	// Create upload directory
-	uploadDir := "./uploads/disputes"
-	if err := os.MkdirAll(uploadDir, 0755); err != nil {
-		return "", err
-	}
-
-	// Generate filename
-	filename := fmt.Sprintf("%d_%d_%d%s", userID, escrowID, time.Now().Unix(), ext)
-	filepath := filepath.Join(uploadDir, filename)
-
-	// Save file
-	if err := os.WriteFile(filepath, decoded, 0644); err != nil {
-		return "", err
-	}
-
-	return fmt.Sprintf("/uploads/disputes/%s", filename), nil
 }
