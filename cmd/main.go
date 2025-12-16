@@ -7,6 +7,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/gofiber/swagger"  
 	"github.com/joho/godotenv"
 
 	"SafeQly/internal/database"
@@ -74,6 +75,7 @@ func main() {
 			"message": "Welcome to SafeQly API",
 			"status":  "running",
 			"version": "1.0",
+			"docs":    "/swagger/index.html",  
 		})
 	})
 
@@ -83,6 +85,17 @@ func main() {
 			"service": "SafeQly",
 		})
 	})
+
+
+	// Swagger Documentation Routes 
+	app.Static("/docs", "../docs")  // Changed: Go up one directory since running from cmd/
+	app.Get("/swagger/*", swagger.New(swagger.Config{
+		URL:          "/docs/swagger.yaml",
+		DeepLinking:  false,
+		DocExpansion: "list",
+	}))
+	log.Println("📚 API Documentation available at /swagger/index.html")
+
 
 	// Setup application routes
 	routes.SetupRoutes(app)
@@ -98,6 +111,7 @@ func main() {
 	}
 
 	log.Printf("🚀 SafeQly server starting on http://localhost:%s", port)
+	log.Printf("📖 Swagger docs: http://localhost:%s/swagger/index.html", port)
 	log.Fatal(app.Listen(":" + port))
 }
 
