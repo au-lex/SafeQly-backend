@@ -1,0 +1,1114 @@
+openapi: 3.0.3
+info:
+  title: SafeQly API
+  description: API documentation for SafeQly escrow payment platform
+  version: 1.0.0
+  contact:
+    name: SafeQly Support
+    email: support@safeqly.com
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+  - url: https://api.safeqly.com
+    description: Production server
+
+tags:
+  - name: Authentication
+    description: User authentication endpoints
+  - name: Wallet
+    description: Wallet management and transactions
+  - name: Escrow
+    description: Escrow transaction management
+  - name: Dispute
+    description: Dispute management
+  - name: Admin
+    description: Admin endpoints
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Enter your JWT token
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "Error message"
+
+    SignupRequest:
+      type: object
+      required:
+        - full_name
+        - email
+        - phone
+        - password
+      properties:
+        full_name:
+          type: string
+          example: "John Doe"
+        email:
+          type: string
+          format: email
+          example: "john@example.com"
+        phone:
+          type: string
+          example: "+2348012345678"
+        password:
+          type: string
+          minLength: 8
+          example: "SecurePass123"
+
+    VerifyOTPRequest:
+      type: object
+      required:
+        - email
+        - otp
+      properties:
+        email:
+          type: string
+          format: email
+        otp:
+          type: string
+          minLength: 6
+          maxLength: 6
+
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    FundWalletRequest:
+      type: object
+      required:
+        - amount
+        - payment_method
+        - payment_provider
+      properties:
+        amount:
+          type: number
+          format: float
+          example: 5000.00
+        payment_method:
+          type: string
+          example: "card"
+        payment_provider:
+          type: string
+          example: "paystack"
+
+    AddBankAccountRequest:
+      type: object
+      required:
+        - bank_name
+        - account_number
+        - account_name
+        - bank_code
+      properties:
+        bank_name:
+          type: string
+          example: "Access Bank"
+        account_number:
+          type: string
+          example: "1440908976"
+        account_name:
+          type: string
+          example: "John Doe"
+        bank_code:
+          type: string
+          example: "044"
+
+paths:
+  /api/auth/signup:
+    post:
+      tags:
+        - Authentication
+      summary: User Signup
+      description: Register a new user and send OTP for verification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignupRequest"
+      responses:
+        "200":
+          description: OTP sent successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  email:
+                    type: string
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: User already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/verify-otp:
+    post:
+      tags:
+        - Authentication
+      summary: Verify Signup OTP
+      description: Verify OTP code and complete user registration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyOTPRequest"
+      responses:
+        "201":
+          description: Account verified and created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  token:
+                    type: string
+                  user:
+                    type: object
+        "400":
+          description: Invalid or expired OTP
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/login:
+    post:
+      tags:
+        - Authentication
+      summary: User Login
+      description: Authenticate user with email and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  token:
+                    type: string
+                  user:
+                    type: object
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/forgot-password:
+    post:
+      tags:
+        - Authentication
+      summary: Forgot Password
+      description: Send OTP to user's email for password reset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+              properties:
+                email:
+                  type: string
+                  format: email
+      responses:
+        "200":
+          description: OTP sent if email exists
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+
+  /api/auth/reset-password:
+    post:
+      tags:
+        - Authentication
+      summary: Reset Password
+      description: Reset user password using OTP verification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - otp
+                - new_password
+              properties:
+                email:
+                  type: string
+                  format: email
+                otp:
+                  type: string
+                new_password:
+                  type: string
+                  minLength: 8
+      responses:
+        "200":
+          description: Password reset successfully
+        "400":
+          description: Invalid or expired OTP
+
+  /api/wallet/fund:
+    post:
+      tags:
+        - Wallet
+      summary: Fund Wallet
+      description: Initiate wallet funding via Paystack
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FundWalletRequest"
+      responses:
+        "200":
+          description: Payment initialized successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authorization_url:
+                    type: string
+                  reference:
+                    type: string
+
+  /api/wallet/balance:
+    get:
+      tags:
+        - Wallet
+      summary: Get Wallet Balance
+      description: Retrieve current wallet balance
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Balance retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  balance:
+                    type: number
+
+  /api/wallet/banks:
+    get:
+      tags:
+        - Wallet
+      summary: Get Bank List
+      description: Get list of Nigerian banks
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Banks retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  banks:
+                    type: array
+                    items:
+                      type: object
+
+  /api/wallet/resolve-account:
+    get:
+      tags:
+        - Wallet
+      summary: Resolve Bank Account
+      description: Verify and resolve bank account details
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: bank_code
+          required: true
+          schema:
+            type: string
+          example: "044"
+        - in: query
+          name: account_number
+          required: true
+          schema:
+            type: string
+          example: "1440908976"
+      responses:
+        "200":
+          description: Account resolved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  account_name:
+                    type: string
+                  account_number:
+                    type: string
+
+  /api/wallet/bank-account:
+    post:
+      tags:
+        - Wallet
+      summary: Add Bank Account
+      description: Add bank account for withdrawals
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddBankAccountRequest"
+      responses:
+        "201":
+          description: Bank account added successfully
+
+  /api/wallet/transactions:
+    get:
+      tags:
+        - Wallet
+      summary: Get Transactions
+      description: Retrieve user transaction history
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Transactions retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transactions:
+                    type: array
+                    items:
+                      type: object
+
+  /api/wallet/paystack/callback:
+    get:
+      tags:
+        - Wallet
+      summary: Paystack Callback
+      description: Handle Paystack payment verification callback
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: reference
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Payment verified successfully
+
+  /api/escrow/search-user:
+    post:
+      tags:
+        - Escrow
+      summary: Search User by Tag
+      description: Find user by their unique user tag
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_tag:
+                  type: string
+      responses:
+        "200":
+          description: User found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    type: object
+
+  /api/escrow/create:
+    post:
+      tags:
+        - Escrow
+      summary: Create Escrow
+      description: Create a new escrow transaction
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - seller_tag
+                - items
+                - amount
+                - delivery_date
+              properties:
+                seller_tag:
+                  type: string
+                items:
+                  type: string
+                amount:
+                  type: number
+                delivery_date:
+                  type: string
+                  format: date
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "201":
+          description: Escrow created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  escrow:
+                    type: object
+
+  /api/escrow:
+    get:
+      tags:
+        - Escrow
+      summary: Get All My Escrows
+      description: Retrieve all escrows for the authenticated user
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: role
+          schema:
+            type: string
+            enum: [buyer, seller]
+          description: Filter by role (buyer or seller)
+      responses:
+        "200":
+          description: Escrows retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  escrows:
+                    type: array
+                    items:
+                      type: object
+
+  /api/escrow/{escrow_id}:
+    get:
+      tags:
+        - Escrow
+      summary: Get Escrow by ID
+      description: Retrieve specific escrow details
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: escrow_id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Escrow details retrieved
+
+  /api/escrow/{escrow_id}/accept:
+    post:
+      tags:
+        - Escrow
+      summary: Seller Accept Escrow
+      description: Seller accepts the escrow transaction
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: escrow_id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Escrow accepted
+
+  /api/escrow/{escrow_id}/reject:
+    post:
+      tags:
+        - Escrow
+      summary: Seller Reject Escrow
+      description: Seller rejects the escrow transaction
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: escrow_id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+      responses:
+        "200":
+          description: Escrow rejected
+
+  /api/escrow/{escrow_id}/complete:
+    post:
+      tags:
+        - Escrow
+      summary: Seller Complete Escrow
+      description: Seller marks escrow as completed
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: escrow_id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Escrow marked as completed
+
+  /api/escrow/{escrow_id}/release:
+    post:
+      tags:
+        - Escrow
+      summary: Buyer Release Funds
+      description: Buyer releases funds to seller
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: escrow_id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Funds released successfully
+
+  /api/disputes:
+    get:
+      tags:
+        - Dispute
+      summary: Get My Disputes
+      description: Retrieve all disputes for the authenticated user
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Disputes retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  disputes:
+                    type: array
+                    items:
+                      type: object
+
+    post:
+      tags:
+        - Dispute
+      summary: Raise Dispute
+      description: Create a new dispute for an escrow transaction
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - escrow_id
+                - reason
+                - description
+              properties:
+                escrow_id:
+                  type: integer
+                reason:
+                  type: string
+                  enum:
+                    - product_not_delivered
+                    - product_damaged
+                    - product_not_as_described
+                    - seller_unresponsive
+                    - buyer_unresponsive
+                    - other
+                description:
+                  type: string
+                evidence:
+                  type: string
+                  format: binary
+      responses:
+        "201":
+          description: Dispute created successfully
+
+  /api/disputes/{dispute_id}:
+    get:
+      tags:
+        - Dispute
+      summary: Get Dispute by ID
+      description: Retrieve specific dispute details
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: dispute_id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Dispute details retrieved
+
+  /api/disputes/{dispute_id}/resolve:
+    put:
+      tags:
+        - Dispute
+      summary: Resolve Dispute (Admin)
+      description: Admin resolves a dispute
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: dispute_id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - resolution
+                - winner
+              properties:
+                resolution:
+                  type: string
+                winner:
+                  type: string
+                  enum: [buyer, seller]
+      responses:
+        "200":
+          description: Dispute resolved successfully
+
+  /api/disputes/upload-evidence:
+    post:
+      tags:
+        - Dispute
+      summary: Upload Dispute Evidence
+      description: Upload additional evidence for a dispute
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                evidence:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Evidence uploaded successfully
+
+  /api/admin/auth/login:
+    post:
+      tags:
+        - Admin
+      summary: Admin Login
+      description: Authenticate admin user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  user:
+                    type: object
+
+  /api/admin/auth/initialize:
+    post:
+      tags:
+        - Admin
+      summary: Initialize First Admin
+      description: Create the first admin account (requires setup key)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - full_name
+                - email
+                - phone
+                - password
+                - setup_key
+              properties:
+                full_name:
+                  type: string
+                email:
+                  type: string
+                phone:
+                  type: string
+                password:
+                  type: string
+                setup_key:
+                  type: string
+      responses:
+        "201":
+          description: Admin created successfully
+
+  /api/admin/profile:
+    get:
+      tags:
+        - Admin
+      summary: Get Admin Profile
+      description: Get current admin profile
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Profile retrieved successfully
+
+  /api/admin/create:
+    post:
+      tags:
+        - Admin
+      summary: Create Additional Admin
+      description: Create additional admin account (admin only)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                full_name:
+                  type: string
+                email:
+                  type: string
+                phone:
+                  type: string
+                password:
+                  type: string
+      responses:
+        "201":
+          description: Admin created successfully
+
+  /api/admin/dashboard:
+    get:
+      tags:
+        - Admin
+      summary: Get Dashboard Stats
+      description: Get admin dashboard statistics
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Statistics retrieved successfully
+
+  /api/admin/users:
+    get:
+      tags:
+        - Admin
+      summary: Get All Users
+      description: Get all users with pagination
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Users retrieved successfully
+
+  /api/admin/users/{user_id}:
+    get:
+      tags:
+        - Admin
+      summary: Get User By ID
+      description: Get specific user by ID
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: User retrieved successfully
+
+    put:
+      tags:
+        - Admin
+      summary: Update User
+      description: Update user details
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                phone_number:
+                  type: string
+                is_verified:
+                  type: boolean
+      responses:
+        "200":
+          description: User updated successfully
+
+    delete:
+      tags:
+        - Admin
+      summary: Delete User
+      description: Permanently delete a user
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: User deleted successfully
+
+  /api/admin/users/{user_id}/suspend:
+    post:
+      tags:
+        - Admin
+      summary: Suspend User
+      description: Suspend a user account
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+      responses:
+        "200":
+          description: User suspended successfully
+
+  /api/admin/users/{user_id}/unsuspend:
+    post:
+      tags:
+        - Admin
+      summary: Unsuspend User
+      description: Unsuspend a user account
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: User unsuspended successfully
+
+  /api/admin/transactions:
+    get:
+      tags:
+        - Admin
+      summary: Get All Transactions
+      description: Get all transactions with optional filters
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+        - in: query
+          name: limit
+          schema:
+            type: integer
+        - in: query
+          name: status
+          schema:
+            type: string
+        - in: query
+          name: type
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transactions retrieved successfully
+
+  /api/admin/disputes:
+    get:
+      tags:
+        - Admin
+      summary: Get All Disputes
+      description: Get all disputes with optional filters
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Disputes retrieved successfully
+
+  /api/admin/disputes/{dispute_id}:
+    get:
+      tags:
+        - Admin
+      summary: Get Dispute By ID
+      description: Get specific dispute with full details
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: dispute_id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Dispute retrieved successfully
+
+  /api/admin/disputes/{dispute_id}/resolve:
+    post:
+      tags:
+        - Admin
+      summary: Resolve Dispute
+      description: Resolve a dispute (admin only)
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: dispute_id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - resolution
+                - winner
+              properties:
+                resolution:
+                  type: string
+                winner:
+                  type: string
+                  enum: [buyer, seller]
+      responses:
+        "200":
+          description: Dispute resolved successfully
