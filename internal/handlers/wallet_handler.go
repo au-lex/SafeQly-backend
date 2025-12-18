@@ -128,6 +128,8 @@ func GetWalletBalance(c *fiber.Ctx) error {
 // FUNDING / DEPOSITS
 // ============================================================================
 
+
+
 func FundAccount(c *fiber.Ctx) error {
 	req := new(FundAccountRequest)
 	if err := c.BodyParser(req); err != nil {
@@ -170,7 +172,8 @@ func FundAccount(c *fiber.Ctx) error {
 		})
 	}
 
-	callbackURL := fmt.Sprintf("http://localhost:8080/api/wallet/paystack/callback?reference=%s", reference)
+	// FIXED: Changed to frontend callback URL
+	callbackURL := fmt.Sprintf("http://localhost:5173/payment-callback?reference=%s", reference)
 
 	paymentResp, err := paystackService.InitializePayment(
 		user.Email,
@@ -205,7 +208,7 @@ func FundAccount(c *fiber.Ctx) error {
 	})
 }
 
-// PaystackCallback handles user redirect after payment (doesn't credit wallet)
+// Keep PaystackCallback for manual verification if needed
 func PaystackCallback(c *fiber.Ctx) error {
 	reference := c.Query("reference")
 	if reference == "" {
@@ -230,7 +233,6 @@ func PaystackCallback(c *fiber.Ctx) error {
 			"reference": reference,
 			"status":    verifyResp.Data.Status,
 			"amount":    float64(verifyResp.Data.Amount) / 100,
-			"note":      "Processing in progress... Check your balance in a moment.",
 		})
 	}
 
@@ -240,6 +242,7 @@ func PaystackCallback(c *fiber.Ctx) error {
 		"reference": reference,
 	})
 }
+
 
 // ============================================================================
 // WEBHOOK HANDLERS

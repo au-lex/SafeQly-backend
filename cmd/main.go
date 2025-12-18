@@ -86,7 +86,6 @@ func main() {
 		})
 	})
 
-
 	// Swagger Documentation Routes 
 	app.Static("/docs", "../docs")  // Changed: Go up one directory since running from cmd/
 	app.Get("/swagger/*", swagger.New(swagger.Config{
@@ -96,13 +95,13 @@ func main() {
 	}))
 	log.Println("📚 API Documentation available at /swagger/index.html")
 
-
 	// Setup application routes
-	routes.SetupRoutes(app)
-	routes.SetupWalletRoutes(app)
-	routes.SetupEscrowRoutes(app)
-	routes.SetupDisputeRoutes(app)
-	routes.SetupAdminRoutes(app) 
+	routes.SetupRoutes(app)           // Auth routes
+	routes.SetupUserRoutes(app)       // User profile routes
+	routes.SetupWalletRoutes(app)     // Wallet routes
+	routes.SetupEscrowRoutes(app)     // Escrow routes
+	routes.SetupDisputeRoutes(app)    // Dispute routes
+	routes.SetupAdminRoutes(app)      // Admin routes
 
 	// Start server
 	port := os.Getenv("PORT")

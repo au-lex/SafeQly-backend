@@ -13,11 +13,11 @@ type User struct {
 	Password          string         `gorm:"not null" json:"-"`
 	UserTag           string         `gorm:"uniqueIndex;not null" json:"user_tag"`
 	Avatar            string         `gorm:"type:text" json:"avatar,omitempty"`
+	AvatarPublicID    string         `gorm:"type:text" json:"avatar_public_id,omitempty"`
 	Balance           float64        `gorm:"default:0" json:"balance"`
 	EscrowBalance     float64        `gorm:"default:0" json:"escrow_balance"`
 	IsEmailVerified   bool           `gorm:"default:false" json:"is_email_verified"`
 	
-
 	Role              string         `gorm:"default:'user'" json:"role"` // 'user' or 'admin'
 	IsSuspended       bool           `gorm:"default:false" json:"is_suspended"`
 	SuspendedAt       *time.Time     `json:"suspended_at,omitempty"`
@@ -66,5 +66,5 @@ type PendingUser struct {
 }
 
 func (PendingUser) TableName() string {
-	return "pending_users"
+	return "pending_users" 
 }
