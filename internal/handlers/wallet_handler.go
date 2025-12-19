@@ -173,7 +173,7 @@ func FundAccount(c *fiber.Ctx) error {
 	}
 
 	// FIXED: Changed to frontend callback URL
-	callbackURL := fmt.Sprintf("http://localhost:5173/payment-callback?reference=%s", reference)
+	callbackURL := fmt.Sprintf("https://safeqly.vercel.app/payment-callback?reference=%s", reference)
 
 	paymentResp, err := paystackService.InitializePayment(
 		user.Email,
