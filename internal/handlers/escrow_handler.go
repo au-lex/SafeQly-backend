@@ -59,11 +59,11 @@ func SearchUserByTag(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"user": fiber.Map{
-			"id":      user.ID,
-			"name":    user.FullName,
-			"tag":     user.UserTag,
-			"avatar":  user.Avatar,
-			"email":   user.Email,
+			"id":     user.ID,
+			"name":   user.FullName,
+			"tag":    user.UserTag,
+			"avatar": user.Avatar,
+			"email":  user.Email,
 		},
 	})
 }
@@ -176,7 +176,7 @@ func CreateEscrow(c *fiber.Ctx) error {
 		// Move funds from buyer's balance to escrow_balance
 		buyer.Balance -= amount
 		buyer.EscrowBalance += amount
-		
+
 		if err := tx.Save(&buyer).Error; err != nil {
 			return err
 		}
@@ -229,6 +229,7 @@ func CreateEscrow(c *fiber.Ctx) error {
 }
 
 // AcceptEscrow - Seller accepts the escrow
+// Money moves from buyer's escrow_balance to seller's escrow_balance
 func AcceptEscrow(c *fiber.Ctx) error {
 	escrowID := c.Params("id")
 	userID := c.Locals("user_id").(uint)
@@ -257,22 +258,53 @@ func AcceptEscrow(c *fiber.Ctx) error {
 		})
 	}
 
-	now := time.Now()
-	escrow.Status = models.EscrowAccepted
-	escrow.AcceptedAt = &now
-	
-	if err := database.DB.Save(&escrow).Error; err != nil {
+	// Use database transaction to move funds atomically
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		// Get buyer and seller
+		var buyer, seller models.User
+		if err := tx.First(&buyer, escrow.BuyerID).Error; err != nil {
+			return err
+		}
+		if err := tx.First(&seller, escrow.SellerID).Error; err != nil {
+			return err
+		}
+
+		// Move funds from buyer's escrow_balance to seller's escrow_balance
+		buyer.EscrowBalance -= escrow.Amount
+		if err := tx.Save(&buyer).Error; err != nil {
+			return err
+		}
+
+		seller.EscrowBalance += escrow.Amount
+		if err := tx.Save(&seller).Error; err != nil {
+			return err
+		}
+
+		// Update escrow status
+		now := time.Now()
+		escrow.Status = models.EscrowAccepted
+		escrow.AcceptedAt = &now
+
+		if err := tx.Save(&escrow).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to accept escrow",
 		})
 	}
 
 	return c.JSON(fiber.Map{
-		"message": "Escrow accepted successfully. You can now proceed with the transaction.",
+		"message": "Escrow accepted successfully. Funds are now in your escrow balance.",
 		"escrow": fiber.Map{
 			"id":          escrow.ID,
 			"status":      escrow.Status,
 			"accepted_at": escrow.AcceptedAt,
+			"amount":      escrow.Amount,
 		},
 	})
 }
@@ -324,7 +356,7 @@ func RejectEscrow(c *fiber.Ctx) error {
 		// Return funds from escrow_balance to balance
 		buyer.EscrowBalance -= escrow.Amount
 		buyer.Balance += escrow.Amount
-		
+
 		if err := tx.Save(&buyer).Error; err != nil {
 			return err
 		}
@@ -332,7 +364,7 @@ func RejectEscrow(c *fiber.Ctx) error {
 		// Update escrow status
 		escrow.Status = models.EscrowRejected
 		escrow.RejectionReason = req.Reason
-		
+
 		if err := tx.Save(&escrow).Error; err != nil {
 			return err
 		}
@@ -388,7 +420,7 @@ func CompleteEscrow(c *fiber.Ctx) error {
 	now := time.Now()
 	escrow.Status = models.EscrowCompleted
 	escrow.CompletedAt = &now
-	
+
 	if err := database.DB.Save(&escrow).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to complete escrow",
@@ -405,8 +437,8 @@ func CompleteEscrow(c *fiber.Ctx) error {
 	})
 }
 
+// ReleaseEscrow - Buyer releases funds to seller
 
-// Money moves from buyer's escrow_balance to seller's balance
 func ReleaseEscrow(c *fiber.Ctx) error {
 	escrowID := c.Params("id")
 	userID := c.Locals("user_id").(uint)
@@ -437,22 +469,14 @@ func ReleaseEscrow(c *fiber.Ctx) error {
 
 	// Use database transaction
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		// Get buyer and seller
-		var buyer, seller models.User
-		if err := tx.First(&buyer, escrow.BuyerID).Error; err != nil {
-			return err
-		}
+		// Get seller
+		var seller models.User
 		if err := tx.First(&seller, escrow.SellerID).Error; err != nil {
 			return err
 		}
 
-		// Remove from buyer's escrow balance
-		buyer.EscrowBalance -= escrow.Amount
-		if err := tx.Save(&buyer).Error; err != nil {
-			return err
-		}
-
-		// Add to seller's available balance
+		// Move from seller's escrow balance to seller's available balance
+		seller.EscrowBalance -= escrow.Amount
 		seller.Balance += escrow.Amount
 		if err := tx.Save(&seller).Error; err != nil {
 			return err
@@ -462,7 +486,7 @@ func ReleaseEscrow(c *fiber.Ctx) error {
 		now := time.Now()
 		escrow.Status = models.EscrowReleased
 		escrow.ReleasedAt = &now
-		
+
 		if err := tx.Save(&escrow).Error; err != nil {
 			return err
 		}
@@ -544,5 +568,53 @@ func GetEscrowByID(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"escrow": escrow,
+	})
+}
+
+
+func GetRecentEscrowUsers(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(uint)
+
+	
+	type RecentUser struct {
+		ID       uint   `json:"id"`
+		FullName string `json:"full_name"`
+		UserTag  string `json:"user_tag"`
+		Avatar   string `json:"avatar"`
+		Email    string `json:"email"`
+		LastEscrowDate time.Time `json:"last_escrow_date"`
+	}
+
+	var recentUsers []RecentUser
+
+	// Query to get recent users from both buyer and seller perspectives
+	query := `
+		SELECT DISTINCT 
+			u.id,
+			u.full_name,
+			u.user_tag,
+			u.avatar,
+			u.email,
+			MAX(e.created_at) as last_escrow_date
+		FROM users u
+		INNER JOIN escrows e ON (
+			(e.buyer_id = ? AND e.seller_id = u.id) OR 
+			(e.seller_id = ? AND e.buyer_id = u.id)
+		)
+		WHERE u.id != ? AND u.deleted_at IS NULL
+		GROUP BY u.id, u.full_name, u.user_tag, u.avatar, u.email
+		ORDER BY last_escrow_date DESC
+		LIMIT 5
+	`
+
+	if err := database.DB.Raw(query, userID, userID, userID).Scan(&recentUsers).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to retrieve recent users",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"recent_users": recentUsers,
+		"count":        len(recentUsers),
 	})
 }

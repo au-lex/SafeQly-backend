@@ -8,6 +8,10 @@ import (
 
 func SetupEscrowRoutes(app *fiber.App) {
 	escrow := app.Group("/api/escrow", middleware.Protected())
+	
+
+		// Get recent escrow users
+		escrow.Get("/recent-users", handlers.GetRecentEscrowUsers)
 
 	// Search user by tag
 	escrow.Post("/search-user", handlers.SearchUserByTag)
@@ -32,4 +36,6 @@ func SetupEscrowRoutes(app *fiber.App) {
 	
 	// Get specific escrow
 	escrow.Get("/:id", handlers.GetEscrowByID)
+	
+
 }
