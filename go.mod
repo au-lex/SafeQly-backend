@@ -46,6 +46,7 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/mitchellh/mapstructure v0.0.0-20170125051937-db1efb556f84 // indirect
+	github.com/resend/resend-go/v2 v2.28.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rpip/paystack-go v0.0.0-20210725234520-196191f8ab58 // indirect
 	github.com/swaggo/files/v2 v2.0.2 // indirect
