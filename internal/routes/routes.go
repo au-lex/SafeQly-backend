@@ -24,6 +24,9 @@ func SetupRoutes(app *fiber.App) {
     auth.Post("/forgot-password", handlers.ForgotPassword)  
     auth.Post("/reset-password", handlers.ResetPassword)     
 
+    auth.Get("/google", handlers.GoogleAuthURL)
+    auth.Get("/google/callback", handlers.GoogleCallback)
+
     // Health check
     api.Get("/health", func(c *fiber.Ctx) error {
         return c.JSON(fiber.Map{
