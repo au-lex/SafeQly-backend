@@ -17,6 +17,9 @@ type User struct {
 	Balance           float64        `gorm:"default:0" json:"balance"`
 	EscrowBalance     float64        `gorm:"default:0" json:"escrow_balance"`
 	IsEmailVerified   bool           `gorm:"default:false" json:"is_email_verified"`
+	// Google OAuth fields
+	GoogleID        string         `gorm:"uniqueIndex" json:"google_id,omitempty"`
+	ProfilePicture  string         `json:"profile_picture,omitempty"`
 	
 	Role              string         `gorm:"default:'user'" json:"role"` // 'user' or 'admin'
 	IsSuspended       bool           `gorm:"default:false" json:"is_suspended"`
