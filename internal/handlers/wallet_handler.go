@@ -99,7 +99,6 @@ type PaystackTransferData struct {
 // ============================================================================
 // WALLET BALANCE
 // ============================================================================
-// Update the GetWalletBalance function in wallet.go
 
 func GetWalletBalance(c *fiber.Ctx) error {
 	userID := c.Locals("user_id").(uint)
@@ -112,9 +111,9 @@ func GetWalletBalance(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"available_balance": user.Balance,        // Money available for use
-		"escrow_balance":    user.EscrowBalance,  // Money locked in escrow
-		"total_balance":     user.Balance + user.EscrowBalance, // Total funds
+		"available_balance": user.Balance,        
+		"escrow_balance":    user.EscrowBalance,  
+		"total_balance":     user.Balance + user.EscrowBalance, 
 		"user": fiber.Map{
 			"id":        user.ID,
 			"full_name": user.FullName,
@@ -127,8 +126,6 @@ func GetWalletBalance(c *fiber.Ctx) error {
 // ============================================================================
 // FUNDING / DEPOSITS
 // ============================================================================
-
-
 
 func FundAccount(c *fiber.Ctx) error {
 	req := new(FundAccountRequest)
@@ -242,7 +239,6 @@ func PaystackCallback(c *fiber.Ctx) error {
 		"reference": reference,
 	})
 }
-
 
 // ============================================================================
 // WEBHOOK HANDLERS
@@ -371,6 +367,11 @@ func handleChargeSuccess(c *fiber.Ctx, data json.RawMessage) error {
 	fmt.Printf("✅ Payment successful: %s - ₦%.2f credited to user %d\n",
 		chargeData.Reference, amountPaid, user.ID)
 
+	// 🔔 SEND NOTIFICATION TO USER
+	if err := notificationService.NotifyDepositSuccess(user.ID, amountPaid, chargeData.Reference); err != nil {
+		fmt.Printf("Failed to send deposit notification: %v\n", err)
+	}
+
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
 		"message": "Payment processed",
 	})
@@ -397,6 +398,16 @@ func handleTransferSuccess(c *fiber.Ctx, data json.RawMessage) error {
 	database.DB.Save(&transaction)
 
 	fmt.Printf("✅ Transfer successful: %s\n", transferData.Reference)
+
+	// 🔔 SEND NOTIFICATION TO USER
+	if err := notificationService.NotifyWithdrawalSuccess(
+		transaction.UserID,
+		transaction.Amount,
+		transaction.BankName,
+		transferData.Reference,
+	); err != nil {
+		fmt.Printf("Failed to send withdrawal success notification: %v\n", err)
+	}
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
 		"message": "Transfer completed",
@@ -449,6 +460,15 @@ func handleTransferFailed(c *fiber.Ctx, data json.RawMessage) error {
 
 	fmt.Printf("⚠️ Transfer failed: %s - ₦%.2f refunded to user %d\n",
 		transferData.Reference, transaction.Amount, user.ID)
+
+	// 🔔 SEND NOTIFICATION TO USER
+	if err := notificationService.NotifyWithdrawalFailed(
+		user.ID,
+		transaction.Amount,
+		transferData.Reference,
+	); err != nil {
+		fmt.Printf("Failed to send withdrawal failed notification: %v\n", err)
+	}
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
 		"message": "Transfer failed, refunded",
@@ -645,128 +665,6 @@ func DeleteBankAccount(c *fiber.Ctx) error {
 // WITHDRAWALS
 // ============================================================================
 
-// func WithdrawFunds(c *fiber.Ctx) error {
-// 	req := new(WithdrawRequest)
-// 	if err := c.BodyParser(req); err != nil {
-// 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-// 			"error": "Invalid request body",
-// 		})
-// 	}
-
-// 	userID := c.Locals("user_id").(uint)
-
-// 	if req.Amount < 100 {
-// 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-// 			"error": "Minimum withdrawal amount is ₦100",
-// 		})
-// 	}
-
-// 	var user models.User
-// 	if err := database.DB.First(&user, userID).Error; err != nil {
-// 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-// 			"error": "Failed to retrieve user information",
-// 		})
-// 	}
-
-// 	if user.Balance < req.Amount {
-// 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-// 			"error": fmt.Sprintf("Insufficient balance. You have ₦%.2f", user.Balance),
-// 		})
-// 	}
-
-// 	var bankAccount models.BankAccount
-// 	if err := database.DB.Where("id = ? AND user_id = ?", req.BankAccountID, userID).First(&bankAccount).Error; err != nil {
-// 		if err == gorm.ErrRecordNotFound {
-// 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-// 				"error": "Bank account not found",
-// 			})
-// 		}
-// 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-// 			"error": "Database error",
-// 		})
-// 	}
-
-// 	reference := generateTransactionReference("WTH")
-
-// 	transaction := models.Transaction{
-// 		UserID:        userID,
-// 		Type:          models.TransactionWithdrawal,
-// 		Amount:        req.Amount,
-// 		Status:        models.TransactionPending,
-// 		Reference:     reference,
-// 		Description:   fmt.Sprintf("Withdrawal of ₦%.2f to %s", req.Amount, bankAccount.BankName),
-// 		BankName:      bankAccount.BankName,
-// 		AccountNumber: bankAccount.AccountNumber,
-// 		AccountName:   bankAccount.AccountName,
-// 	}
-
-// 	if err := database.DB.Create(&transaction).Error; err != nil {
-// 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-// 			"error": "Failed to create withdrawal",
-// 		})
-// 	}
-
-// 	// Deduct from balance first
-// 	user.Balance -= req.Amount
-// 	if err := database.DB.Save(&user).Error; err != nil {
-// 		database.DB.Delete(&transaction)
-// 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-// 			"error": "Failed to process withdrawal",
-// 		})
-// 	}
-
-// 	// Initiate transfer with Paystack
-// 	transferResp, err := paystackService.InitiateTransfer(
-// 		bankAccount.RecipientCode,
-// 		req.Amount,
-// 		fmt.Sprintf("Withdrawal to %s", bankAccount.AccountName),
-// 		reference,
-// 	)
-
-// 	if err != nil {
-// 		// Rollback: Credit back user's account and mark transaction as failed
-// 		user.Balance += req.Amount
-// 		database.DB.Save(&user)
-
-// 		transaction.Status = models.TransactionFailed
-// 		database.DB.Save(&transaction)
-
-// 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-// 			"error": fmt.Sprintf("Failed to initiate transfer: %v", err),
-// 		})
-// 	}
-
-// 	// Update transaction with transfer details
-// 	if transferResp.Data.Status == "success" {
-// 		now := time.Now()
-// 		transaction.Status = models.TransactionCompleted
-// 		transaction.CompletedAt = &now
-// 	}
-// 	database.DB.Save(&transaction)
-
-// 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-// 		"message": "Withdrawal initiated successfully. Funds will be transferred shortly.",
-// 		"transaction": fiber.Map{
-// 			"id":             transaction.ID,
-// 			"reference":      transaction.Reference,
-// 			"amount":         transaction.Amount,
-// 			"status":         transaction.Status,
-// 			"bank_name":      transaction.BankName,
-// 			"account_number": transaction.AccountNumber,
-// 		},
-// 		"new_balance": user.Balance,
-// 		"transfer_info": fiber.Map{
-// 			"transfer_code": transferResp.Data.TransferCode,
-// 			"status":        transferResp.Data.Status,
-// 		},
-// 	})
-// }
-
-
-
-
-// Add this modified WithdrawFunds function to handle Starter tier limitations
-
 func WithdrawFunds(c *fiber.Ctx) error {
 	req := new(WithdrawRequest)
 	if err := c.BodyParser(req); err != nil {
@@ -814,7 +712,7 @@ func WithdrawFunds(c *fiber.Ctx) error {
 		UserID:        userID,
 		Type:          models.TransactionWithdrawal,
 		Amount:        req.Amount,
-		Status:        models.TransactionPending, // Keep as pending for manual processing
+		Status:        models.TransactionPending,
 		Reference:     reference,
 		Description:   fmt.Sprintf("Withdrawal of ₦%.2f to %s", req.Amount, bankAccount.BankName),
 		BankName:      bankAccount.BankName,
@@ -869,7 +767,7 @@ func WithdrawFunds(c *fiber.Ctx) error {
 					"account_number": transaction.AccountNumber,
 				},
 				"new_balance": user.Balance,
-				"note": "You will receive a notification once the transfer is completed.",
+				"note":        "You will receive a notification once the transfer is completed.",
 			})
 		}
 
@@ -929,8 +827,6 @@ func stringContains(s, substr string) bool {
 	}
 	return false
 }
-
-
 
 // ============================================================================
 // TRANSACTIONS
