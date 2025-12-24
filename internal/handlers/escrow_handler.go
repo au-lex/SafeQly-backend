@@ -197,6 +197,11 @@ func CreateEscrow(c *fiber.Ctx) error {
 	// Reload buyer to get updated balances
 	database.DB.First(&buyer, buyerID)
 
+	// 🔔 SEND NOTIFICATION TO SELLER
+	if err := notificationService.NotifyEscrowCreated(seller.ID, buyer.FullName, amount, escrowID); err != nil {
+		fmt.Printf("Failed to send notification: %v\n", err)
+	}
+
 	response := fiber.Map{
 		"message": "Escrow created successfully. Waiting for seller to accept.",
 		"escrow": fiber.Map{
@@ -229,7 +234,6 @@ func CreateEscrow(c *fiber.Ctx) error {
 }
 
 // AcceptEscrow - Seller accepts the escrow
-// Money moves from buyer's escrow_balance to seller's escrow_balance
 func AcceptEscrow(c *fiber.Ctx) error {
 	escrowID := c.Params("id")
 	userID := c.Locals("user_id").(uint)
@@ -298,6 +302,15 @@ func AcceptEscrow(c *fiber.Ctx) error {
 		})
 	}
 
+	// Get seller details for notification
+	var seller models.User
+	database.DB.First(&seller, escrow.SellerID)
+
+	// 🔔 SEND NOTIFICATION TO BUYER
+	if err := notificationService.NotifyEscrowAccepted(escrow.BuyerID, seller.FullName, escrow.Amount, escrow.ID); err != nil {
+		fmt.Printf("Failed to send notification: %v\n", err)
+	}
+
 	return c.JSON(fiber.Map{
 		"message": "Escrow accepted successfully. Funds are now in your escrow balance.",
 		"escrow": fiber.Map{
@@ -310,7 +323,6 @@ func AcceptEscrow(c *fiber.Ctx) error {
 }
 
 // RejectEscrow - Seller rejects the escrow
-// Money is returned from buyer's escrow_balance to balance
 func RejectEscrow(c *fiber.Ctx) error {
 	escrowID := c.Params("id")
 	userID := c.Locals("user_id").(uint)
@@ -378,6 +390,15 @@ func RejectEscrow(c *fiber.Ctx) error {
 		})
 	}
 
+	// Get seller details for notification
+	var seller models.User
+	database.DB.First(&seller, escrow.SellerID)
+
+	// 🔔 SEND NOTIFICATION TO BUYER
+	if err := notificationService.NotifyEscrowRejected(escrow.BuyerID, seller.FullName, req.Reason, escrow.Amount, escrow.ID); err != nil {
+		fmt.Printf("Failed to send notification: %v\n", err)
+	}
+
 	return c.JSON(fiber.Map{
 		"message": "Escrow rejected. Amount has been refunded to buyer.",
 		"escrow": fiber.Map{
@@ -427,6 +448,15 @@ func CompleteEscrow(c *fiber.Ctx) error {
 		})
 	}
 
+	// Get seller details for notification
+	var seller models.User
+	database.DB.First(&seller, escrow.SellerID)
+
+	// 🔔 SEND NOTIFICATION TO BUYER
+	if err := notificationService.NotifyEscrowCompleted(escrow.BuyerID, seller.FullName, escrow.Amount, escrow.ID); err != nil {
+		fmt.Printf("Failed to send notification: %v\n", err)
+	}
+
 	return c.JSON(fiber.Map{
 		"message": "Delivery marked as completed. Waiting for buyer to release funds.",
 		"escrow": fiber.Map{
@@ -438,7 +468,6 @@ func CompleteEscrow(c *fiber.Ctx) error {
 }
 
 // ReleaseEscrow - Buyer releases funds to seller
-
 func ReleaseEscrow(c *fiber.Ctx) error {
 	escrowID := c.Params("id")
 	userID := c.Locals("user_id").(uint)
@@ -498,6 +527,15 @@ func ReleaseEscrow(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to release funds",
 		})
+	}
+
+	// Get buyer details for notification
+	var buyer models.User
+	database.DB.First(&buyer, escrow.BuyerID)
+
+	// 🔔 SEND NOTIFICATION TO SELLER
+	if err := notificationService.NotifyEscrowReleased(escrow.SellerID, buyer.FullName, escrow.Amount, escrow.ID); err != nil {
+		fmt.Printf("Failed to send notification: %v\n", err)
 	}
 
 	return c.JSON(fiber.Map{
@@ -571,23 +609,20 @@ func GetEscrowByID(c *fiber.Ctx) error {
 	})
 }
 
-
 func GetRecentEscrowUsers(c *fiber.Ctx) error {
 	userID := c.Locals("user_id").(uint)
 
-	
 	type RecentUser struct {
-		ID       uint   `json:"id"`
-		FullName string `json:"full_name"`
-		UserTag  string `json:"user_tag"`
-		Avatar   string `json:"avatar"`
-		Email    string `json:"email"`
+		ID             uint      `json:"id"`
+		FullName       string    `json:"full_name"`
+		UserTag        string    `json:"user_tag"`
+		Avatar         string    `json:"avatar"`
+		Email          string    `json:"email"`
 		LastEscrowDate time.Time `json:"last_escrow_date"`
 	}
 
 	var recentUsers []RecentUser
 
-	// Query to get recent users from both buyer and seller perspectives
 	query := `
 		SELECT DISTINCT 
 			u.id,

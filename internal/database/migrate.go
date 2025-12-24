@@ -19,6 +19,7 @@ func Migrate() error {
 		&models.Dispute{},
 		&models.Transaction{},  
 		&models.BankAccount{},
+        &models.Notification{},
     )
     
     if err != nil {

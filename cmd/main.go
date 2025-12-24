@@ -87,7 +87,7 @@ func main() {
 	})
 
 	// Swagger Documentation Routes 
-	app.Static("/docs", "../docs")  // Changed: Go up one directory since running from cmd/
+	app.Static("/docs", "../docs")  
 	app.Get("/swagger/*", swagger.New(swagger.Config{
 		URL:          "/docs/swagger.yaml",
 		DeepLinking:  false,
@@ -101,6 +101,7 @@ func main() {
 	routes.SetupWalletRoutes(app)     // Wallet routes
 	routes.SetupEscrowRoutes(app)     // Escrow routes
 	routes.SetupDisputeRoutes(app)    // Dispute routes
+	routes.SetupNotificationRoutes(app) // Notification routes
 	routes.SetupAdminRoutes(app)      // Admin routes
 
 	// Start server

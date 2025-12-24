@@ -140,6 +140,23 @@ func RaiseDispute(c *fiber.Ctx) error {
 	// Load relationships
 	database.DB.Preload("Escrow").Preload("User").First(&dispute, dispute.ID)
 
+	// Get the user who raised the dispute
+	var raisedBy models.User
+	database.DB.First(&raisedBy, userID)
+
+	// Determine who to notify (the other party)
+	var notifyUserID uint
+	if escrow.BuyerID == userID {
+		notifyUserID = escrow.SellerID
+	} else {
+		notifyUserID = escrow.BuyerID
+	}
+
+	// 🔔 SEND NOTIFICATION TO THE OTHER PARTY
+	if err := notificationService.NotifyDisputeRaised(notifyUserID, raisedBy.FullName, reason, uint(escrowID), dispute.ID); err != nil {
+		fmt.Printf("Failed to send notification: %v\n", err)
+	}
+
 	response := fiber.Map{
 		"message": "Dispute raised successfully. Our team will review it shortly.",
 		"dispute": fiber.Map{
@@ -343,6 +360,15 @@ func ResolveDispute(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to resolve dispute",
 		})
+	}
+
+	// 🔔 SEND NOTIFICATIONS TO BOTH PARTIES
+	if err := notificationService.NotifyDisputeResolved(dispute.Escrow.BuyerID, req.Winner, req.Resolution, dispute.ID); err != nil {
+		fmt.Printf("Failed to send notification to buyer: %v\n", err)
+	}
+	
+	if err := notificationService.NotifyDisputeResolved(dispute.Escrow.SellerID, req.Winner, req.Resolution, dispute.ID); err != nil {
+		fmt.Printf("Failed to send notification to seller: %v\n", err)
 	}
 
 	return c.JSON(fiber.Map{
