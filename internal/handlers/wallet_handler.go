@@ -645,6 +645,128 @@ func DeleteBankAccount(c *fiber.Ctx) error {
 // WITHDRAWALS
 // ============================================================================
 
+// func WithdrawFunds(c *fiber.Ctx) error {
+// 	req := new(WithdrawRequest)
+// 	if err := c.BodyParser(req); err != nil {
+// 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+// 			"error": "Invalid request body",
+// 		})
+// 	}
+
+// 	userID := c.Locals("user_id").(uint)
+
+// 	if req.Amount < 100 {
+// 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+// 			"error": "Minimum withdrawal amount is ₦100",
+// 		})
+// 	}
+
+// 	var user models.User
+// 	if err := database.DB.First(&user, userID).Error; err != nil {
+// 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+// 			"error": "Failed to retrieve user information",
+// 		})
+// 	}
+
+// 	if user.Balance < req.Amount {
+// 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+// 			"error": fmt.Sprintf("Insufficient balance. You have ₦%.2f", user.Balance),
+// 		})
+// 	}
+
+// 	var bankAccount models.BankAccount
+// 	if err := database.DB.Where("id = ? AND user_id = ?", req.BankAccountID, userID).First(&bankAccount).Error; err != nil {
+// 		if err == gorm.ErrRecordNotFound {
+// 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+// 				"error": "Bank account not found",
+// 			})
+// 		}
+// 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+// 			"error": "Database error",
+// 		})
+// 	}
+
+// 	reference := generateTransactionReference("WTH")
+
+// 	transaction := models.Transaction{
+// 		UserID:        userID,
+// 		Type:          models.TransactionWithdrawal,
+// 		Amount:        req.Amount,
+// 		Status:        models.TransactionPending,
+// 		Reference:     reference,
+// 		Description:   fmt.Sprintf("Withdrawal of ₦%.2f to %s", req.Amount, bankAccount.BankName),
+// 		BankName:      bankAccount.BankName,
+// 		AccountNumber: bankAccount.AccountNumber,
+// 		AccountName:   bankAccount.AccountName,
+// 	}
+
+// 	if err := database.DB.Create(&transaction).Error; err != nil {
+// 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+// 			"error": "Failed to create withdrawal",
+// 		})
+// 	}
+
+// 	// Deduct from balance first
+// 	user.Balance -= req.Amount
+// 	if err := database.DB.Save(&user).Error; err != nil {
+// 		database.DB.Delete(&transaction)
+// 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+// 			"error": "Failed to process withdrawal",
+// 		})
+// 	}
+
+// 	// Initiate transfer with Paystack
+// 	transferResp, err := paystackService.InitiateTransfer(
+// 		bankAccount.RecipientCode,
+// 		req.Amount,
+// 		fmt.Sprintf("Withdrawal to %s", bankAccount.AccountName),
+// 		reference,
+// 	)
+
+// 	if err != nil {
+// 		// Rollback: Credit back user's account and mark transaction as failed
+// 		user.Balance += req.Amount
+// 		database.DB.Save(&user)
+
+// 		transaction.Status = models.TransactionFailed
+// 		database.DB.Save(&transaction)
+
+// 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+// 			"error": fmt.Sprintf("Failed to initiate transfer: %v", err),
+// 		})
+// 	}
+
+// 	// Update transaction with transfer details
+// 	if transferResp.Data.Status == "success" {
+// 		now := time.Now()
+// 		transaction.Status = models.TransactionCompleted
+// 		transaction.CompletedAt = &now
+// 	}
+// 	database.DB.Save(&transaction)
+
+// 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+// 		"message": "Withdrawal initiated successfully. Funds will be transferred shortly.",
+// 		"transaction": fiber.Map{
+// 			"id":             transaction.ID,
+// 			"reference":      transaction.Reference,
+// 			"amount":         transaction.Amount,
+// 			"status":         transaction.Status,
+// 			"bank_name":      transaction.BankName,
+// 			"account_number": transaction.AccountNumber,
+// 		},
+// 		"new_balance": user.Balance,
+// 		"transfer_info": fiber.Map{
+// 			"transfer_code": transferResp.Data.TransferCode,
+// 			"status":        transferResp.Data.Status,
+// 		},
+// 	})
+// }
+
+
+
+
+// Add this modified WithdrawFunds function to handle Starter tier limitations
+
 func WithdrawFunds(c *fiber.Ctx) error {
 	req := new(WithdrawRequest)
 	if err := c.BodyParser(req); err != nil {
@@ -692,7 +814,7 @@ func WithdrawFunds(c *fiber.Ctx) error {
 		UserID:        userID,
 		Type:          models.TransactionWithdrawal,
 		Amount:        req.Amount,
-		Status:        models.TransactionPending,
+		Status:        models.TransactionPending, // Keep as pending for manual processing
 		Reference:     reference,
 		Description:   fmt.Sprintf("Withdrawal of ₦%.2f to %s", req.Amount, bankAccount.BankName),
 		BankName:      bankAccount.BankName,
@@ -700,22 +822,29 @@ func WithdrawFunds(c *fiber.Ctx) error {
 		AccountName:   bankAccount.AccountName,
 	}
 
-	if err := database.DB.Create(&transaction).Error; err != nil {
+	// Use database transaction for atomicity
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		// Create transaction record first
+		if err := tx.Create(&transaction).Error; err != nil {
+			return err
+		}
+
+		// Deduct from balance
+		user.Balance -= req.Amount
+		if err := tx.Save(&user).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to create withdrawal",
+			"error": "Failed to process withdrawal request",
 		})
 	}
 
-	// Deduct from balance first
-	user.Balance -= req.Amount
-	if err := database.DB.Save(&user).Error; err != nil {
-		database.DB.Delete(&transaction)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to process withdrawal",
-		})
-	}
-
-	// Initiate transfer with Paystack
+	// Try to initiate transfer, but handle Starter tier gracefully
 	transferResp, err := paystackService.InitiateTransfer(
 		bankAccount.RecipientCode,
 		req.Amount,
@@ -724,25 +853,48 @@ func WithdrawFunds(c *fiber.Ctx) error {
 	)
 
 	if err != nil {
-		// Rollback: Credit back user's account and mark transaction as failed
-		user.Balance += req.Amount
-		database.DB.Save(&user)
+		// Check if it's the Starter tier error
+		if contains(err.Error(), "starter business") || contains(err.Error(), "third party payouts") {
+			// Log for manual processing but don't fail the request
+			fmt.Printf("⚠️ Manual processing required for withdrawal %s: Paystack Starter tier limitation\n", reference)
+			
+			return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
+				"message": "Withdrawal request received successfully, your withdrawal will be processed within 1-2 business days.",
+				"transaction": fiber.Map{
+					"id":             transaction.ID,
+					"reference":      transaction.Reference,
+					"amount":         transaction.Amount,
+					"status":         "pending_manual_review",
+					"bank_name":      transaction.BankName,
+					"account_number": transaction.AccountNumber,
+				},
+				"new_balance": user.Balance,
+				"note": "You will receive a notification once the transfer is completed.",
+			})
+		}
 
-		transaction.Status = models.TransactionFailed
-		database.DB.Save(&transaction)
+		// For other errors, rollback
+		database.DB.Transaction(func(tx *gorm.DB) error {
+			user.Balance += req.Amount
+			tx.Save(&user)
+			
+			transaction.Status = models.TransactionFailed
+			tx.Save(&transaction)
+			return nil
+		})
 
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": fmt.Sprintf("Failed to initiate transfer: %v", err),
 		})
 	}
 
-	// Update transaction with transfer details
+	// If transfer succeeded (for upgraded accounts)
 	if transferResp.Data.Status == "success" {
 		now := time.Now()
 		transaction.Status = models.TransactionCompleted
 		transaction.CompletedAt = &now
+		database.DB.Save(&transaction)
 	}
-	database.DB.Save(&transaction)
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"message": "Withdrawal initiated successfully. Funds will be transferred shortly.",
@@ -761,6 +913,24 @@ func WithdrawFunds(c *fiber.Ctx) error {
 		},
 	})
 }
+
+// Helper function
+func contains(str, substr string) bool {
+	return len(str) >= len(substr) && (str == substr || len(str) > len(substr) && 
+		(str[:len(substr)] == substr || str[len(str)-len(substr):] == substr || 
+		stringContains(str, substr)))
+}
+
+func stringContains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+
 
 // ============================================================================
 // TRANSACTIONS

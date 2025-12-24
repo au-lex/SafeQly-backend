@@ -5,6 +5,7 @@ import (
     "strconv"
     "strings"
     "time"
+    "fmt"
 
     "github.com/gofiber/fiber/v2"
     "github.com/golang-jwt/jwt/v5"
@@ -706,6 +707,300 @@ func (h *AdminHandler) GetDashboardStats(c *fiber.Ctx) error {
     return c.JSON(fiber.Map{
         "stats": stats,
     })
+}
+
+
+
+
+
+// GetPendingWithdrawals retrieves all pending withdrawals for manual processing
+func (h *AdminHandler) GetPendingWithdrawals(c *fiber.Ctx) error {
+	page, _ := strconv.Atoi(c.Query("page", "1"))
+	limit, _ := strconv.Atoi(c.Query("limit", "50"))
+	offset := (page - 1) * limit
+
+	var transactions []models.Transaction
+	var total int64
+
+	query := h.db.Model(&models.Transaction{}).
+		Where("type = ? AND status = ?", models.TransactionWithdrawal, models.TransactionPending)
+
+	if err := query.Count(&total).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to count pending withdrawals",
+		})
+	}
+
+	if err := query.Preload("User").
+		Order("created_at ASC").
+		Offset(offset).
+		Limit(limit).
+		Find(&transactions).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to retrieve pending withdrawals",
+		})
+	}
+
+	// Calculate total amount pending
+	var totalAmount float64
+	for _, tx := range transactions {
+		totalAmount += tx.Amount
+	}
+
+	return c.JSON(fiber.Map{
+		"pending_withdrawals": transactions,
+		"pagination": fiber.Map{
+			"page":  page,
+			"limit": limit,
+			"total": total,
+		},
+		"summary": fiber.Map{
+			"total_count":  total,
+			"total_amount": totalAmount,
+		},
+		"note": "Process these manually via your bank, then mark as completed",
+	})
+}
+
+// GetWithdrawalByID retrieves a specific withdrawal with user details
+func (h *AdminHandler) GetWithdrawalByID(c *fiber.Ctx) error {
+	txID, err := strconv.Atoi(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid transaction ID",
+		})
+	}
+
+	var transaction models.Transaction
+	if err := h.db.Preload("User").First(&transaction, txID).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "Withdrawal not found",
+		})
+	}
+
+	if transaction.Type != models.TransactionWithdrawal {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Not a withdrawal transaction",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"withdrawal": transaction,
+		"user": fiber.Map{
+			"id":        transaction.User.ID,
+			"full_name": transaction.User.FullName,
+			"email":     transaction.User.Email,
+			"phone":     transaction.User.Phone,
+		},
+	})
+}
+
+// CompleteManualWithdrawal marks a withdrawal as completed after manual processing
+func (h *AdminHandler) CompleteManualWithdrawal(c *fiber.Ctx) error {
+	txID, err := strconv.Atoi(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid transaction ID",
+		})
+	}
+
+	var req struct {
+		Notes string `json:"notes"` // Optional admin notes
+	}
+	c.BodyParser(&req)
+
+	var transaction models.Transaction
+	if err := h.db.Preload("User").First(&transaction, txID).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "Withdrawal not found",
+		})
+	}
+
+	if transaction.Type != models.TransactionWithdrawal {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Not a withdrawal transaction",
+		})
+	}
+
+	if transaction.Status != models.TransactionPending {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error":  "Withdrawal is not pending",
+			"status": transaction.Status,
+		})
+	}
+
+	adminID := c.Locals("user_id").(uint)
+	now := time.Now()
+
+	updates := map[string]interface{}{
+		"status":       models.TransactionCompleted,
+		"completed_at": &now,
+	}
+
+	// Add admin notes if provided
+	if req.Notes != "" {
+		currentDesc := transaction.Description
+		updates["description"] = currentDesc + " | Admin Notes: " + req.Notes
+	}
+
+	if err := h.db.Model(&transaction).Updates(updates).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to complete withdrawal",
+		})
+	}
+
+	// Log the action
+	fmt.Printf("✅ Admin %d marked withdrawal %s as completed for user %d (₦%.2f)\n",
+		adminID, transaction.Reference, transaction.UserID, transaction.Amount)
+
+	return c.JSON(fiber.Map{
+		"message": "Withdrawal marked as completed successfully",
+		"withdrawal": fiber.Map{
+			"id":             transaction.ID,
+			"reference":      transaction.Reference,
+			"amount":         transaction.Amount,
+			"status":         transaction.Status,
+			"user_id":        transaction.UserID,
+			"account_number": transaction.AccountNumber,
+			"bank_name":      transaction.BankName,
+			"account_name":   transaction.AccountName,
+			"completed_at":   transaction.CompletedAt,
+		},
+	})
+}
+
+// FailManualWithdrawal marks a withdrawal as failed and refunds the user
+func (h *AdminHandler) FailManualWithdrawal(c *fiber.Ctx) error {
+	txID, err := strconv.Atoi(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid transaction ID",
+		})
+	}
+
+	var req struct {
+		Reason string `json:"reason" validate:"required"` // Why it failed
+	}
+
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid request body. Reason is required.",
+		})
+	}
+
+	var transaction models.Transaction
+	if err := h.db.Preload("User").First(&transaction, txID).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "Withdrawal not found",
+		})
+	}
+
+	if transaction.Type != models.TransactionWithdrawal {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Not a withdrawal transaction",
+		})
+	}
+
+	if transaction.Status != models.TransactionPending {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error":  "Withdrawal is not pending",
+			"status": transaction.Status,
+		})
+	}
+
+	adminID := c.Locals("user_id").(uint)
+
+	// Use database transaction to refund user
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		// Refund the user
+		var user models.User
+		if err := tx.First(&user, transaction.UserID).Error; err != nil {
+			return err
+		}
+
+		user.Balance += transaction.Amount
+		if err := tx.Save(&user).Error; err != nil {
+			return err
+		}
+
+		// Update transaction status
+		transaction.Status = models.TransactionFailed
+		transaction.Description = transaction.Description + " | Failed: " + req.Reason
+
+		if err := tx.Save(&transaction).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to process refund",
+		})
+	}
+
+	fmt.Printf("⚠️ Admin %d marked withdrawal %s as failed. ₦%.2f refunded to user %d. Reason: %s\n",
+		adminID, transaction.Reference, transaction.Amount, transaction.UserID, req.Reason)
+
+	return c.JSON(fiber.Map{
+		"message": "Withdrawal marked as failed and user refunded",
+		"withdrawal": fiber.Map{
+			"id":        transaction.ID,
+			"reference": transaction.Reference,
+			"amount":    transaction.Amount,
+			"status":    transaction.Status,
+			"user_id":   transaction.UserID,
+		},
+	})
+}
+
+// GetWithdrawalStats retrieves withdrawal statistics
+func (h *AdminHandler) GetWithdrawalStats(c *fiber.Ctx) error {
+	var stats struct {
+		TotalWithdrawals     int64   `json:"total_withdrawals"`
+		PendingWithdrawals   int64   `json:"pending_withdrawals"`
+		CompletedWithdrawals int64   `json:"completed_withdrawals"`
+		FailedWithdrawals    int64   `json:"failed_withdrawals"`
+		PendingAmount        float64 `json:"pending_amount"`
+		CompletedAmount      float64 `json:"completed_amount"`
+	}
+
+	// Count statistics
+	h.db.Model(&models.Transaction{}).
+		Where("type = ?", models.TransactionWithdrawal).
+		Count(&stats.TotalWithdrawals)
+
+	h.db.Model(&models.Transaction{}).
+		Where("type = ? AND status = ?", models.TransactionWithdrawal, models.TransactionPending).
+		Count(&stats.PendingWithdrawals)
+
+	h.db.Model(&models.Transaction{}).
+		Where("type = ? AND status = ?", models.TransactionWithdrawal, models.TransactionCompleted).
+		Count(&stats.CompletedWithdrawals)
+
+	h.db.Model(&models.Transaction{}).
+		Where("type = ? AND status = ?", models.TransactionWithdrawal, models.TransactionFailed).
+		Count(&stats.FailedWithdrawals)
+
+	// Calculate amounts
+	var pendingTxs []models.Transaction
+	h.db.Where("type = ? AND status = ?", models.TransactionWithdrawal, models.TransactionPending).
+		Find(&pendingTxs)
+	for _, tx := range pendingTxs {
+		stats.PendingAmount += tx.Amount
+	}
+
+	var completedTxs []models.Transaction
+	h.db.Where("type = ? AND status = ?", models.TransactionWithdrawal, models.TransactionCompleted).
+		Find(&completedTxs)
+	for _, tx := range completedTxs {
+		stats.CompletedAmount += tx.Amount
+	}
+
+	return c.JSON(fiber.Map{
+		"stats": stats,
+	})
 }
 
 // Helper function to generate user tag
