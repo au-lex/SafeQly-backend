@@ -34,7 +34,7 @@ func SetupWalletRoutes(app *fiber.App) {
 	
 	// Bank Accounts
 	protected.Post("/bank-account", handlers.AddBankAccount)
-	protected.Get("/bank-accounts", handlers.GetBankAccounts)
+	protected.Get("/bank-account", handlers.GetBankAccounts)
 	protected.Put("/bank-account/:id/set-default", handlers.SetDefaultBankAccount)
 	protected.Delete("/bank-account/:id", handlers.DeleteBankAccount)
 	

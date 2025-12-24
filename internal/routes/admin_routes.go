@@ -45,4 +45,13 @@ func SetupAdminRoutes(app *fiber.App) {
     admin.Get("/disputes", adminHandler.GetAllDisputes)
     admin.Get("/disputes/:id", adminHandler.GetDisputeByID)
     admin.Post("/disputes/:id/resolve", adminHandler.ResolveDispute)
+
+
+    // Withdrawal management (NEW)
+	admin.Get("/withdrawals/pending", adminHandler.GetPendingWithdrawals)
+	admin.Get("/withdrawals/stats", adminHandler.GetWithdrawalStats)
+	admin.Get("/withdrawals/:id", adminHandler.GetWithdrawalByID)
+	admin.Post("/withdrawals/:id/complete", adminHandler.CompleteManualWithdrawal)
+	admin.Post("/withdrawals/:id/fail", adminHandler.FailManualWithdrawal)
 }
+
